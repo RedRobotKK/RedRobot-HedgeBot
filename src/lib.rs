@@ -14,6 +14,7 @@ pub mod utils;
 pub mod strategies;
 pub mod backtest;
 pub mod simulator;
+pub mod fee_calculator;
 
 pub use models::{AccountPurpose, HealthMetrics, LiquidationRisk, Protocol, TradingAccount};
 pub use modules::{AccountManager, AccountSummary};
@@ -21,6 +22,7 @@ pub use utils::{Error, Result};
 pub use strategies::{StrategySignal, StrategyContext, MarketSnapshot};
 pub use backtest::{Backtester, BacktestConfig};
 pub use simulator::{Simulator, SimulationResults};
+pub use fee_calculator::{FeeCalculator, FeeStructure};
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
