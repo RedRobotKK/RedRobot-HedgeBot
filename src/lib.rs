@@ -20,6 +20,8 @@ pub mod dynamic_position_sizing;
 pub mod frameworks;
 pub mod ai_decision_engine;
 pub mod dashboard;
+pub mod strategy_attribution;
+pub mod strategy_analytics;
 
 pub use models::{AccountPurpose, HealthMetrics, LiquidationRisk, Protocol, TradingAccount};
 pub use modules::{AccountManager, AccountSummary};
@@ -36,6 +38,8 @@ pub use frameworks::{
 };
 pub use ai_decision_engine::{AIDecisionEngine, AIDecision, AIDecisionContext, AIDecisionValidator};
 pub use dashboard::{DashboardMetrics, DashboardBuilder, CompleteDashboard, SentimentAnalyzer, SentimentMetrics, AIThoughts, RecentTrade, SystemAlert, AlertLevel};
+pub use strategy_attribution::{StrategyAttributor, AttributedTrade, StrategyMetrics, MarketRegime, RegimeSpecificMetrics, StrategyCorrelation};
+pub use strategy_analytics::{StrategyAnalytics, StrategyViability, CryptoStrategyProfile, StrategyComparison, MarketSpecificPerformance};
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
