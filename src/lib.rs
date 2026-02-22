@@ -16,6 +16,7 @@ pub mod backtest;
 pub mod simulator;
 pub mod fee_calculator;
 pub mod position_manager;
+pub mod dynamic_position_sizing;
 
 pub use models::{AccountPurpose, HealthMetrics, LiquidationRisk, Protocol, TradingAccount};
 pub use modules::{AccountManager, AccountSummary};
@@ -25,6 +26,7 @@ pub use backtest::{Backtester, BacktestConfig};
 pub use simulator::{Simulator, SimulationResults};
 pub use fee_calculator::{FeeCalculator, FeeStructure};
 pub use position_manager::{AggregatePosition, ExitCalculator, ExitStrategy, DCARules};
+pub use dynamic_position_sizing::{DynamicSizer, SupportResistance, TechnicalSetup, DynamicPositionSize};
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
