@@ -439,11 +439,80 @@ impl SentimentAnalyzer {
             sentiment.macd_signal
         )
     }
+
+    pub fn format_strategy_performance(strategies: &[StrategyPerformance]) -> String {
+        if strategies.is_empty() {
+            return String::from("STRATEGY PERFORMANCE: No data available");
+        }
+
+        let mut output = String::from(
+            "🎯 STRATEGY PERFORMANCE (Real-time Attribution)\n\
+             ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        );
+
+        // Sort by viability score (best first)
+        let mut sorted = strategies.to_vec();
+        sorted.sort_by(|a, b| b.viability_score.partial_cmp(&a.viability_score).unwrap());
+
+        // Header
+        output.push_str("Strategy                  | Score | WR    | PF   | Signals | Action\n");
+        output.push_str("─────────────────────────┼───────┼───────┼──────┼─────────┼──────────────\n");
+
+        // Strategies grouped by viability
+        for strategy in sorted.iter().take(12) {  // Show top 12 strategies
+            let status_icon = match strategy.viability_score {
+                s if s >= 85.0 => "🟢",
+                s if s >= 70.0 => "🟡",
+                s if s >= 50.0 => "🟠",
+                _ => "🔴",
+            };
+
+            output.push_str(&format!(
+                "{} {:<25} | {:<3.0} | {:<3.0}% | {:<3.1}x | {:<7} | {}\n",
+                status_icon,
+                strategy.strategy_name,
+                strategy.viability_score,
+                strategy.win_rate * 100.0,
+                strategy.profit_factor,
+                strategy.total_signals,
+                strategy.action
+            ));
+        }
+
+        output.push_str("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+
+        // Summary statistics
+        let avg_score: f64 = sorted.iter().map(|s| s.viability_score).sum::<f64>() / sorted.len() as f64;
+        let high_viability = sorted.iter().filter(|s| s.viability_score >= 85.0).count();
+        let low_viability = sorted.iter().filter(|s| s.viability_score < 50.0).count();
+
+        output.push_str(&format!(
+            "Avg Viability Score: {:.0} | Strong ({}) | Weak ({}) | Total: {}\n",
+            avg_score,
+            high_viability,
+            low_viability,
+            sorted.len()
+        ));
+
+        output
+    }
 }
 
 // ============================================================================
 // DASHBOARD AGGREGATOR (What gets sent to both web and TUI)
 // ============================================================================
+
+/// Strategy performance visualization data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyPerformance {
+    pub strategy_name: String,
+    pub viability_score: f64,      // 0-100
+    pub win_rate: f64,              // 0-1
+    pub profit_factor: f64,
+    pub total_signals: u32,
+    pub status: String,             // "Excellent" / "Good" / "Fair" / "Poor" / "Monitor"
+    pub action: String,             // "Increase" / "Use" / "Monitor" / "Reduce" / "Remove"
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompleteDashboard {
@@ -451,6 +520,7 @@ pub struct CompleteDashboard {
     pub sentiment: SentimentMetrics,
     pub ai_thoughts: AIThoughts,
     pub recent_trades: Vec<RecentTrade>,
+    pub strategy_performance: Vec<StrategyPerformance>,  // NEW: Strategy metrics
     pub timestamp: DateTime<Utc>,
 }
 
@@ -459,6 +529,7 @@ impl CompleteDashboard {
         metrics: DashboardMetrics,
         ai_thoughts: AIThoughts,
         recent_trades: Vec<RecentTrade>,
+        strategy_performance: Vec<StrategyPerformance>,  // NEW: Strategy metrics
     ) -> Self {
         let sentiment = SentimentAnalyzer::analyze(&metrics);
 
@@ -467,6 +538,7 @@ impl CompleteDashboard {
             sentiment,
             ai_thoughts,
             recent_trades,
+            strategy_performance,  // NEW
             timestamp: Utc::now(),
         }
     }
@@ -492,6 +564,9 @@ impl CompleteDashboard {
 
         // AI thinking
         output.push_str(&format!("🧠 {}\n\n", DashboardBuilder::format_ai_thinking(&self.ai_thoughts)));
+
+        // Strategy performance (NEW)
+        output.push_str(&format!("{}\n\n", DashboardBuilder::format_strategy_performance(&self.strategy_performance)));
 
         // Recent trades
         output.push_str(&format!("{}\n\n", DashboardBuilder::format_recent_trades(&self.recent_trades, 10)));
