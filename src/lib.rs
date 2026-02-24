@@ -23,7 +23,6 @@ pub mod dashboard;
 pub mod strategy_attribution;
 pub mod strategy_analytics;
 pub mod scoring_system;
-pub mod strategies::institutional;
 pub mod dca_scoring_integration;
 pub mod price_action;
 pub mod price_action_backtest;

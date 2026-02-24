@@ -84,16 +84,27 @@ git push -u origin main
 ssh root@YOUR_DROPLET_IP
 ```
 
-### Step 7: Install Rust
+### Step 7: Install System Dependencies + Rust
 
 ```bash
+# Update package list
 apt update && apt upgrade -y
 
+# Install ALL required build dependencies in one command
+# (These are required to compile Rust projects with networking/SSL)
+apt-get install -y build-essential pkg-config libssl-dev
+
+# Install Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 source ~/.cargo/env
 
 rustc --version  # Verify
+
+# What each package does:
+# build-essential  → C compiler (cc/gcc) needed by Rust linker
+# pkg-config       → Finds system libraries like OpenSSL
+# libssl-dev       → OpenSSL development headers for HTTPS/TLS support
 ```
 
 ### Step 8: Clone Your Code
