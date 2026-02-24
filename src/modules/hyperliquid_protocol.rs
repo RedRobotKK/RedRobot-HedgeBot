@@ -238,7 +238,7 @@ impl HyperliquidClient {
         info!("Fetching market data for {}", symbol);
 
         let symbol_copy = symbol.to_string();
-        self.retry_with_backoff(|| {
+        let market_data = self.retry_with_backoff(|| {
             let client = self.client.clone();
             let symbol = symbol_copy.clone();
 
@@ -792,7 +792,7 @@ impl HyperliquidClient {
     }
 
     /// Send a signed request to the Hyperliquid API
-    async fn send_signed_request<T: for<'de> Deserialize<'de>>(
+    async fn send_signed_request<T: for<'de> Deserialize<'de> + Default>(
         &self,
         request: serde_json::Value,
     ) -> Result<T> {

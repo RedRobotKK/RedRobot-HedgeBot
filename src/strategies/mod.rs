@@ -49,6 +49,7 @@ pub mod order_block;
 pub mod fair_value_gaps;
 pub mod wyckoff_analysis;
 pub mod market_profile;
+pub mod institutional;
 
 use serde::{Deserialize, Serialize};
 
@@ -260,9 +261,9 @@ pub fn calculate_confluence_score(signals: &[StrategySignal]) -> f64 {
         0.05  // All bullish
     } else if sell_signals > 0 && buy_signals == 0 {
         0.05  // All bearish
-    } else if buy_signals > sell_signals * 1.5 {
+    } else if (buy_signals as f64) > (sell_signals as f64) * 1.5 {
         0.03  // Strongly bullish
-    } else if sell_signals > buy_signals * 1.5 {
+    } else if (sell_signals as f64) > (buy_signals as f64) * 1.5 {
         0.03  // Strongly bearish
     } else {
         -0.05  // Conflicted signals reduce confidence

@@ -54,7 +54,7 @@ pub struct TechnicalSetup {
 impl TechnicalSetup {
     /// Score technical setup from 0-1
     pub fn confidence_score(&self) -> f64 {
-        let mut score = 0.5; // Base
+        let mut score: f64 = 0.5; // Base
 
         // RSI extremes are strong signals
         if self.rsi < self.rsi_oversold {

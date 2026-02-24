@@ -24,7 +24,7 @@ pub fn evaluate(ctx: &StrategyContext) -> Result<StrategySignal, Error> {
         });
     }
 
-    let prev = previous.unwrap();
+    let prev = previous.as_ref().unwrap();
     let band_width = current.bollinger_upper - current.bollinger_lower;
     let mid = current.bollinger_middle;
 

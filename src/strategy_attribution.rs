@@ -30,7 +30,7 @@ pub struct AttributedTrade {
 }
 
 /// Market regime classification
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MarketRegime {
     StrongBullish,   // RSI > 60, price > MA50, ADX > 30
     Bullish,         // Price above MA20, volume normal
@@ -293,13 +293,17 @@ impl StrategyAttributor {
 
             let best_strategy = strategy_wins
                 .iter()
-                .max_by_key(|(_, (wins, total))| (*wins as f64) / (*total as f64))
+                .max_by(|(_, (wins1, total1)), (_, (wins2, total2))| {
+                    ((*wins1 as f64) / (*total1 as f64)).partial_cmp(&((*wins2 as f64) / (*total2 as f64))).unwrap_or(std::cmp::Ordering::Equal)
+                })
                 .map(|(name, _)| name.clone())
                 .unwrap_or_else(|| "N/A".to_string());
 
             let worst_strategy = strategy_wins
                 .iter()
-                .min_by_key(|(_, (wins, total))| (*wins as f64) / (*total as f64))
+                .min_by(|(_, (wins1, total1)), (_, (wins2, total2))| {
+                    ((*wins1 as f64) / (*total1 as f64)).partial_cmp(&((*wins2 as f64) / (*total2 as f64))).unwrap_or(std::cmp::Ordering::Equal)
+                })
                 .map(|(name, _)| name.clone())
                 .unwrap_or_else(|| "N/A".to_string());
 

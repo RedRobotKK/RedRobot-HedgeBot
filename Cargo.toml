@@ -17,6 +17,10 @@ log = "0.4"
 dotenv = "0.15"
 env_logger = "0.11"
 uuid = { version = "1.6", features = ["v4", "serde"] }
+rand = "0.8"
+hex = "0.4"
+hmac = "0.12"
+sha2 = "0.10"
 
 [profile.release]
 opt-level = 3

@@ -169,24 +169,26 @@ impl Backtester {
 
     /// Update position with current market price
     pub fn update_price(&mut self, symbol: &str, price: f64, timestamp: i64) {
-        if let Some(position) = self.positions.get_mut(symbol) {
+        let (should_close_stop, should_close_tp) = if let Some(position) = self.positions.get_mut(symbol) {
             position.current_price = price;
 
-            // Check stop loss
-            if price <= position.stop_loss {
-                self.close_position(symbol, price, timestamp, TradeStatus::StoppedOut);
-            }
+            // Extract values to avoid borrow issues
+            let stop_loss = position.stop_loss;
+            let take_profit = position.take_profit;
+            (price <= stop_loss, take_profit.map(|tp| price >= tp).unwrap_or(false))
+        } else {
+            (false, false)
+        };
 
-            // Check take profit
-            if let Some(tp) = position.take_profit {
-                if price >= tp {
-                    self.close_position(symbol, price, timestamp, TradeStatus::TakeProfitHit);
-                }
-            }
-
-            // Update drawdown
-            self.update_drawdown();
+        // Now call close_position without the borrow
+        if should_close_stop {
+            self.close_position(symbol, price, timestamp, TradeStatus::StoppedOut);
+        } else if should_close_tp {
+            self.close_position(symbol, price, timestamp, TradeStatus::TakeProfitHit);
         }
+
+        // Update drawdown
+        self.update_drawdown();
     }
 
     /// Close an open position

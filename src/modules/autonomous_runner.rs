@@ -6,6 +6,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
+use rand;
 
 /// Autonomous trading system state
 pub struct AutonomousRunner {
