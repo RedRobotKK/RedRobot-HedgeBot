@@ -166,14 +166,17 @@ impl HyperliquidClient {
 
     /// Sign request with HMAC-SHA256
     fn sign_request(&self, payload: &str, timestamp: u64) -> String {
-        use hmac_sha256::HMAC;
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
 
         let message = format!("{}:{}", timestamp, payload);
         let key = hex::decode(&self.private_key_hex)
             .unwrap_or_default();
 
-        let hmac = HMAC::mac(message.as_bytes(), &key);
-        hex::encode(hmac)
+        let mut hmac = Hmac::<Sha256>::new_from_slice(&key)
+            .unwrap_or_else(|_| Hmac::<Sha256>::new_from_slice(&[]).unwrap());
+        hmac.update(message.as_bytes());
+        hex::encode(hmac.finalize().into_bytes())
     }
 
     /// Rate limiting and retry logic
@@ -521,7 +524,7 @@ impl HyperliquidClient {
             .client
             .get(&url)
             .header("X-Account-ID", &self.account_id)
-            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Authorization", format!("Bearer {}", self.private_key_hex))
             .send()
             .await
         {
@@ -604,7 +607,7 @@ impl HyperliquidClient {
             .client
             .get(&url)
             .header("X-Account-ID", &self.account_id)
-            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Authorization", format!("Bearer {}", self.private_key_hex))
             .send()
             .await
         {
@@ -660,7 +663,7 @@ impl HyperliquidClient {
             .client
             .get(&url)
             .header("X-Account-ID", &self.account_id)
-            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Authorization", format!("Bearer {}", self.private_key_hex))
             .send()
             .await
         {
@@ -762,7 +765,7 @@ impl HyperliquidClient {
     // ===== Private Helper Methods =====
 
     /// Send a request to the Hyperliquid API
-    async fn send_request<T: for<'de> Deserialize<'de>>(
+    async fn send_request<T: for<'de> Deserialize<'de> + Default>(
         &self,
         payload: serde_json::Value,
     ) -> Result<T> {
@@ -772,7 +775,7 @@ impl HyperliquidClient {
             .client
             .post(&url)
             .header("X-Account-ID", &self.account_id)
-            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Authorization", format!("Bearer {}", self.private_key_hex))
             .json(&payload)
             .send()
             .await

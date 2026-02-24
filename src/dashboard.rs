@@ -352,6 +352,38 @@ impl DashboardBuilder {
 
         output
     }
+
+    pub fn format_strategy_performance(strategies: &[StrategyPerformance]) -> String {
+        if strategies.is_empty() {
+            return "STRATEGY PERFORMANCE: No strategies tracked yet".to_string();
+        }
+
+        let mut output = String::from("STRATEGY PERFORMANCE\n");
+        output.push_str("─────────────────────────────────────────────────────\n");
+
+        for strategy in strategies {
+            let status_icon = match strategy.status.as_str() {
+                "Excellent" => "🟢",
+                "Good" => "🟦",
+                "Fair" => "🟨",
+                "Poor" => "🟧",
+                _ => "⚪",
+            };
+
+            output.push_str(&format!(
+                "{} {} (Score: {:.0}) | W/L: {:.1}% | PF: {:.2} | Signals: {} | Action: {}\n",
+                status_icon,
+                strategy.strategy_name,
+                strategy.viability_score,
+                strategy.win_rate * 100.0,
+                strategy.profit_factor,
+                strategy.total_signals,
+                strategy.action
+            ));
+        }
+
+        output
+    }
 }
 
 // ============================================================================
