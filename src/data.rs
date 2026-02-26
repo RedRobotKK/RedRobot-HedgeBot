@@ -118,25 +118,26 @@ impl MarketClient {
         candidates
     }
 
-    /// Fetch 50 hourly candles from Binance for the given Hyperliquid symbol.
+    /// Fetch candles from Binance for the given Hyperliquid symbol.
+    /// `interval` e.g. "1h", "4h". `limit` = number of candles to fetch.
     /// Returns the full candle series (newest candle last) as Vec<PriceData>.
-    pub async fn fetch_market_data(&self, hl_symbol: &str) -> Result<Vec<PriceData>> {
+    async fn fetch_klines(&self, hl_symbol: &str, interval: &str, limit: u32) -> Result<Vec<PriceData>> {
         let bn_sym = hl_to_binance(hl_symbol)
             .ok_or_else(|| anyhow::anyhow!("No Binance mapping for {}", hl_symbol))?;
 
         let url = format!(
-            "{}/api/v3/klines?symbol={}&interval=1h&limit=50",
-            self.bn_base, bn_sym
+            "{}/api/v3/klines?symbol={}&interval={}&limit={}",
+            self.bn_base, bn_sym, interval, limit
         );
 
         let resp = self.client.get(&url).send().await?;
         if !resp.status().is_success() {
-            anyhow::bail!("Binance {} → HTTP {}", bn_sym, resp.status());
+            anyhow::bail!("Binance {} {} → HTTP {}", bn_sym, interval, resp.status());
         }
 
         let raw: Vec<Vec<serde_json::Value>> = resp.json().await?;
         if raw.is_empty() {
-            anyhow::bail!("No candle data returned for {}", bn_sym);
+            anyhow::bail!("No candle data returned for {} {}", bn_sym, interval);
         }
 
         let candles: Vec<PriceData> = raw
@@ -153,6 +154,18 @@ impl MarketClient {
             .collect();
 
         Ok(candles)
+    }
+
+    /// Fetch 50 hourly candles from Binance for the given Hyperliquid symbol.
+    pub async fn fetch_market_data(&self, hl_symbol: &str) -> Result<Vec<PriceData>> {
+        self.fetch_klines(hl_symbol, "1h", 50).await
+    }
+
+    /// Fetch 50 four-hour candles from Binance for the given Hyperliquid symbol.
+    /// Used for multi-timeframe confirmation (HTF indicators).
+    /// 50 × 4h = 200 hours ≈ 8 days of context.
+    pub async fn fetch_market_data_4h(&self, hl_symbol: &str) -> Result<Vec<PriceData>> {
+        self.fetch_klines(hl_symbol, "4h", 50).await
     }
 
     /// Fetch top-20 order book depth from Binance for the given Hyperliquid symbol.

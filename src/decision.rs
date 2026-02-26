@@ -39,9 +39,10 @@
 //! | Neutral  | 0.42      | 1.25      |
 
 use anyhow::Result;
+use chrono::Timelike;
 use serde::{Deserialize, Serialize};
 use crate::data::PriceData;
-use crate::indicators::TechnicalIndicators;
+use crate::indicators::{TechnicalIndicators, HtfIndicators};
 use crate::signals::OrderFlowSignal;
 use crate::learner::{SignalWeights, SignalContribution};
 use crate::sentiment::SentimentData;
@@ -157,17 +158,24 @@ pub struct BtcMarketContext {
     pub dominance: f64,
     /// BTC return over the last ~24 h in percent (e.g. +2.5, -1.8).
     pub btc_return_24h: f64,
+    /// BTC return over the last 4h (one 4h candle window).
+    /// Used with `asset_return_4h` for relative-performance catch-up signal.
+    pub btc_return_4h: f64,
+    /// This asset's own 4h return — compared against `btc_return_4h`.
+    /// 0.0 when 4h candles are unavailable.
+    pub asset_return_4h: f64,
 }
 
 impl BtcMarketContext {
-    /// Returns a confidence delta in **[-0.12, +0.08]**.
+    /// Returns a confidence delta in **[-0.12, +0.12]**.
     ///
-    /// Positive = BTC direction supports the trade.
+    /// Positive = BTC direction / relative-performance supports the trade.
     /// Negative = BTC direction opposes the trade.
     /// Zero     = BTC flat or dominance too low to matter.
     ///
     /// Not applied to BTC's own signals (caller passes `None` for BTC).
     pub fn confidence_adjustment(&self, action: &str) -> f64 {
+        // ── 24h BTC direction alignment ──────────────────────────────────────
         // Treat sub-±0.3 % moves as "flat" to avoid noise on tiny wiggles
         let btc_bull = self.btc_return_24h >  0.3;
         let btc_bear = self.btc_return_24h < -0.3;
@@ -176,22 +184,36 @@ impl BtcMarketContext {
         let aligned = (action == "BUY"  && btc_bull) || (action == "SELL" && btc_bear);
         let opposed  = (action == "BUY"  && btc_bear) || (action == "SELL" && btc_bull);
 
-        if self.dominance >= 55.0 {
+        let btc_adj = if self.dominance >= 55.0 {
             // HIGH dominance — BTC direction is a strong edge (Pearson 0.75)
-            if      aligned && big_move  {  0.08 }  // strong BTC tailwind → best edge
-            else if aligned              {  0.05 }  // moderate alignment bonus
-            else if opposed && big_move  { -0.12 }  // fighting a big BTC move → dangerous
-            else if opposed              { -0.08 }  // BTC headwind → reduce confidence
-            else                         {  0.00 }  // BTC flat → no adjustment
+            if      aligned && big_move  {  0.08 }
+            else if aligned              {  0.05 }
+            else if opposed && big_move  { -0.12 }
+            else if opposed              { -0.08 }
+            else                         {  0.00 }
         } else if self.dominance >= 48.0 {
             // MEDIUM dominance — weaker correlation (Pearson 0.49)
-            if      aligned { 0.03 }
+            if      aligned {  0.03 }
             else if opposed { -0.04 }
-            else            { 0.00 }
+            else            {  0.00 }
         } else {
             // LOW dominance / altseason (<48 %) — alts decouple from BTC
             0.00
-        }
+        };
+
+        // ── Relative performance catch-up (IC ~0.04–0.06) ───────────────────
+        // Asset lagging BTC over 4h in a high-dominance regime tends to catch up.
+        // Asset leading BTC by >2% may mean-revert back toward BTC performance.
+        let lag = self.asset_return_4h - self.btc_return_4h;
+        let rel_bonus: f64 = if self.dominance >= 55.0 && self.btc_return_4h.abs() > 0.5 {
+            if      action == "BUY"  && lag < -2.0 { 0.04 }  // lagging → catch-up BUY
+            else if action == "SELL" && lag >  2.0 { 0.04 }  // leading → mean-reversion SELL
+            else                                    { 0.00 }
+        } else {
+            0.00
+        };
+
+        btc_adj + rel_bonus
     }
 }
 
@@ -202,6 +224,7 @@ impl BtcMarketContext {
 /// Returns a `Decision` with action BUY / SELL / SKIP.
 /// `sentiment` is `None` when LunarCrush data is not available.
 /// `btc_ctx` is `None` for BTC itself (no self-referential filter).
+/// `htf` is `None` when 4-hour candles are unavailable (MTF filter skipped).
 pub fn make_decision(
     candles:   &[PriceData],
     ind:       &TechnicalIndicators,
@@ -210,18 +233,78 @@ pub fn make_decision(
     sentiment: Option<&SentimentData>,
     funding:   Option<&FundingData>,
     btc_ctx:   Option<&BtcMarketContext>,
+    htf:       Option<&HtfIndicators>,
 ) -> Result<Decision> {
     let last  = candles.last().ok_or_else(|| anyhow::anyhow!("Empty candle slice"))?;
     let close = last.close;
 
-    let regime = detect_regime(ind);
+    // ── Regime detection with ATR expansion override ──────────────────────────
+    // Standard: ADX(14) classifies Trending / Ranging / Neutral.
+    // Override: if current ATR is >1.5× the prior 24-bar mean, we're in a
+    // breakout expansion — treat as Trending even if ADX hasn't caught up yet.
+    let regime = {
+        let base = detect_regime(ind);
+        if ind.atr_expansion_ratio > 1.5 && base == Regime::Ranging {
+            log::debug!("ATR expansion {:.2}× — regime override Ranging→Trending",
+                        ind.atr_expansion_ratio);
+            Regime::Trending
+        } else {
+            base
+        }
+    };
+
+    // ── Intraday session filter ────────────────────────────────────────────────
+    // UTC hour → entry quality multiplier applied to the score threshold.
+    // London+NY overlap (08:00–17:00) has the highest signal quality.
+    // Asian dead zone (00:00–06:00) has poor follow-through; raise the bar.
+    let utc_hour = chrono::Utc::now().hour();
+    let session_mult: f64 = match utc_hour {
+        8..=17  => 1.00,  // London+NY overlap — full signal quality
+        18..=21 => 1.06,  // NY close / early Asia — slightly elevated bar
+        _       => 1.14,  // Asian dead zone — meaningfully higher bar required
+    };
+    let session_label = match utc_hour {
+        8..=12  => "LON",
+        13..=17 => "NY",
+        18..=21 => "NYc",
+        _       => "ASIA",
+    };
+
+    // ── Multi-timeframe RSI scale ──────────────────────────────────────────────
+    // 4h RSI should be in the same "zone" as 1h RSI to confirm the signal.
+    // Disagreement between timeframes = higher false-positive rate → scale down.
+    let rsi_mtf_scale: f64 = htf.map(|h| {
+        let r4h = h.rsi_4h;
+        let r1h = ind.rsi;
+        let both_oversold  = r1h < 45.0 && r4h < 50.0;
+        let both_overbought = r1h > 55.0 && r4h > 50.0;
+        let r4h_extreme    = r4h < 35.0 || r4h > 65.0;
+        if (both_oversold || both_overbought) && r4h_extreme { 1.30 }
+        else if both_oversold || both_overbought               { 1.10 }
+        else                                                   { 0.80 }
+    }).unwrap_or(1.0);
+
+    // ── Multi-timeframe Z-score scale ─────────────────────────────────────────
+    // 4h Z-score confirms or contradicts the 1h mean-reversion signal.
+    let z_mtf_scale: f64 = htf.map(|h| {
+        let z4h = h.z_score_4h;
+        let z1h = ind.z_score;
+        let same_dir    = (z1h < 0.0 && z4h < -0.5) || (z1h > 0.0 && z4h > 0.5);
+        let z4h_extreme = z4h.abs() > 1.2;
+        if same_dir && z4h_extreme { 1.40 }  // both TFs agree at extremes — strong edge
+        else if same_dir            { 1.10 }  // same direction — mild boost
+        else if z4h.abs() < 0.4    { 0.70 }  // 4h near neutral — 1h extreme likely noise
+        else                        { 0.85 }  // mild disagreement
+    }).unwrap_or(1.0);
     let mut bull    = 0.0f64;
     let mut bear    = 0.0f64;
     let mut contrib = SignalContribution::default();
 
     // ═════════════════════════════════════════════════════════════════════════
     //  1. RSI — behaviour is REGIME-DEPENDENT
+    //     rsi_mtf_scale applied: 4h RSI confirmation boosts (+30%) or reduces (-20%)
     // ═════════════════════════════════════════════════════════════════════════
+    let rsi_w = weights.rsi * rsi_mtf_scale;
     match regime {
         // TRENDING: RSI used as momentum gauge (50-line cross)
         // Above 55 = bull momentum building; below 45 = bear momentum building.
@@ -229,18 +312,17 @@ pub fn make_decision(
         // overbought can stay overbought for many bars.
         Regime::Trending => {
             if ind.rsi > 65.0 {
-                // Strong but not extreme bull momentum
-                bull += weights.rsi * 0.80;
+                bull += rsi_w * 0.80;
                 contrib.rsi_bullish = true;
             } else if ind.rsi > 55.0 {
-                bull += weights.rsi * 0.55;
+                bull += rsi_w * 0.55;
                 contrib.rsi_bullish = true;
             } else if ind.rsi < 35.0 {
                 // Very oversold even in uptrend = shake-out, reversal likely
-                bull += weights.rsi * 0.70;
+                bull += rsi_w * 0.70;
                 contrib.rsi_bullish = true;
             } else if ind.rsi < 45.0 {
-                bear += weights.rsi * 0.55;
+                bear += rsi_w * 0.55;
                 contrib.rsi_bullish = false;
             } else {
                 contrib.rsi_bullish = ind.rsi > 50.0;
@@ -250,22 +332,22 @@ pub fn make_decision(
         // Extremes (<30 / >70) are the PRIMARY signal source.
         Regime::Ranging | Regime::Neutral => {
             if ind.rsi < 28.0 {
-                bull += weights.rsi;          // deeply oversold — strong reversal signal
+                bull += rsi_w;           // deeply oversold — strong reversal signal
                 contrib.rsi_bullish = true;
             } else if ind.rsi > 72.0 {
-                bear += weights.rsi;
+                bear += rsi_w;
                 contrib.rsi_bullish = false;
             } else if ind.rsi < 40.0 {
-                bull += weights.rsi * 0.60;
+                bull += rsi_w * 0.60;
                 contrib.rsi_bullish = true;
             } else if ind.rsi > 60.0 {
-                bear += weights.rsi * 0.60;
+                bear += rsi_w * 0.60;
                 contrib.rsi_bullish = false;
             } else if ind.rsi < 47.0 {
-                bull += weights.rsi * 0.25;
+                bull += rsi_w * 0.25;
                 contrib.rsi_bullish = true;
             } else if ind.rsi > 53.0 {
-                bear += weights.rsi * 0.25;
+                bear += rsi_w * 0.25;
                 contrib.rsi_bullish = false;
             } else {
                 contrib.rsi_bullish = ind.rsi < 50.0;
@@ -400,14 +482,18 @@ pub fn make_decision(
 
     // ═════════════════════════════════════════════════════════════════════════
     //  5. Z-score mean-reversion (ranging regime's answer to EMA cross)
+    //     z_mtf_scale applied: 4h Z-score confirmation boosts (+40%) or reduces (-30%)
     // ═════════════════════════════════════════════════════════════════════════
     // Z-score = (close − 20-bar mean) / std_dev
     // Used most aggressively in RANGING markets.
     // Extreme readings predict high-probability reversions.
-    let z_w = match regime {
-        Regime::Ranging  => weights.z_score * 1.40,  // PRIMARY in ranging
-        Regime::Trending => weights.z_score * 0.50,  // suppressed in trends
-        Regime::Neutral  => weights.z_score,
+    let z_w = {
+        let regime_w = match regime {
+            Regime::Ranging  => weights.z_score * 1.40,  // PRIMARY in ranging
+            Regime::Trending => weights.z_score * 0.50,  // suppressed in trends
+            Regime::Neutral  => weights.z_score,
+        };
+        regime_w * z_mtf_scale
     };
 
     let z = ind.z_score;
@@ -563,13 +649,32 @@ pub fn make_decision(
                 Regime::Ranging  => weights.funding_rate * 1.20,  // crowded positions revert faster
                 Regime::Neutral  => weights.funding_rate,
             };
+
+            // Funding rate delta boost: rapid rate movement is a more urgent signal.
+            // A sudden jump in funding rate means new leverage is being added quickly —
+            // the crowd is getting more crowded (or rapidly de-levering), raising the
+            // probability of an imminent forced unwind or squeeze.
+            //
+            // Delta threshold in 8h rate units:
+            //   0.0005 = 0.05%  (moderate change — one whole tier)
+            //   0.0002 = 0.02%  (mild change)
+            let abs_delta = fund.funding_delta.abs();
+            let raw_delta_mult = if abs_delta > 0.0005 { 1.60 }
+                                 else if abs_delta > 0.0002 { 1.30 }
+                                 else                        { 1.00 };
+            // Only apply boost when the delta CONFIRMS the current rate direction
+            // (e.g. rate already positive AND rising — longs deepening their commitment)
+            let delta_confirms = (fund.funding_delta > 0.0 && fund.funding_rate > 0.0)
+                              || (fund.funding_delta < 0.0 && fund.funding_rate < 0.0);
+            let delta_mult = if delta_confirms { raw_delta_mult } else { 1.0 };
+
             if strength > 0.0 {
                 // Shorts crowded → squeeze potential → bullish
-                bull += fund_w * strength;
+                bull += fund_w * strength * delta_mult;
                 contrib.funding_bullish = true;
             } else {
                 // Longs crowded → liquidation risk → bearish
-                bear += fund_w * (-strength);
+                bear += fund_w * (-strength) * delta_mult;
                 contrib.funding_bullish = false;
             }
         }
@@ -595,9 +700,12 @@ pub fn make_decision(
     bear += chp.bear_boost;
 
     // ═════════════════════════════════════════════════════════════════════════
-    //  Final decision — regime-dependent thresholds
+    //  Final decision — regime-dependent thresholds with session adjustment
     // ═════════════════════════════════════════════════════════════════════════
-    let threshold  = regime.threshold();
+    // session_mult raises the entry bar during low-quality trading hours
+    // (Asian dead zone) to avoid acting on noise when institutional liquidity
+    // is thin and follow-through is poor.
+    let threshold  = regime.threshold() * session_mult;
     let dominance  = regime.dominance();
 
     let (action, raw_confidence) = if bull >= threshold && bull > bear * dominance {
@@ -658,7 +766,14 @@ pub fn make_decision(
     // Funding rate tag — only shown when rate is outside neutral band
     let fund_tag = funding
         .filter(|f| f.is_significant())
-        .map(|f| format!(" 💰FR:{:+.3}%({})", f.funding_rate * 100.0, f.emoji()))
+        .map(|f| {
+            let delta_str = if f.funding_delta.abs() > 0.0001 {
+                format!(" Δ{:+.3}%", f.funding_delta * 100.0)
+            } else {
+                String::new()
+            };
+            format!(" 💰FR:{:+.3}%({}{})", f.funding_rate * 100.0, f.emoji(), delta_str)
+        })
         .unwrap_or_default();
 
     // BTC dominance context tag — shown in rationale when context is active
@@ -670,15 +785,34 @@ pub fn make_decision(
         } else {
             String::new()
         };
-        format!(" 🟠DOM:{:.0}% BTC:{:+.1}%{}",
+        let rel_str = if b.asset_return_4h != 0.0 || b.btc_return_4h != 0.0 {
+            format!(" 4H:A{:+.1}%/B{:+.1}%", b.asset_return_4h, b.btc_return_4h)
+        } else {
+            String::new()
+        };
+        format!(" 🟠DOM:{:.0}% BTC:{:+.1}%{}{}",
             b.dominance, b.btc_return_24h,
-            if adj_str.is_empty() { String::new() } else { format!("({})", adj_str) }
+            if adj_str.is_empty() { String::new() } else { format!("({})", adj_str) },
+            rel_str,
         )
     }).unwrap_or_default();
 
+    // ATR expansion tag — only shown when regime override occurred
+    let atr_tag = if ind.atr_expansion_ratio > 1.5 {
+        format!(" ⚡ATR×{:.1}", ind.atr_expansion_ratio)
+    } else {
+        String::new()
+    };
+
+    // MTF tag — only shown when 4h data is available
+    let mtf_tag = htf.map(|h| {
+        format!(" 4H:RSI{:.0}/Z{:.1}", h.rsi_4h, h.z_score_4h)
+    }).unwrap_or_default();
+
     let rationale = format!(
-        "[{}] RSI:{:.0} Z:{:.1} EMA:{:+.2}% MACD-H:{:.5} VOL:{:.1}× ADX:{:.0} VWAP:{:+.1}%{}{}{}{}{}",
+        "[{}/{}] RSI:{:.0} Z:{:.1} EMA:{:+.2}% MACD-H:{:.5} VOL:{:.1}× ADX:{:.0} VWAP:{:+.1}%{}{}{}{}{}{}{}",
         regime.label(),
+        session_label,
         ind.rsi,
         ind.z_score,
         ind.ema_cross_pct,
@@ -691,6 +825,8 @@ pub fn make_decision(
         btc_tag,
         csp_tag,
         chp_tag,
+        atr_tag,
+        mtf_tag,
     );
 
     Ok(Decision {

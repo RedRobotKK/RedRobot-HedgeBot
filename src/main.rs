@@ -383,22 +383,37 @@ async fn run_cycle(
         }
     }
 
-    // BTC 24h return: compare first vs last candle across the fetched window
-    // (~25 h of 15-min candles).  Used same-cycle so it's always fresh.
-    let btc_ctx: Option<decision::BtcMarketContext> = match market.fetch_market_data("BTC").await {
-        Ok(btc_candles) if btc_candles.len() >= 2 => {
-            let first = btc_candles.first().unwrap().close;
-            let last  = btc_candles.last().unwrap().close;
-            let ret   = (last - first) / first * 100.0;
-            let dom   = *btc_dominance.read().await;
-            info!("🟠 BTC ctx: dom={:.1}%  24h_ret={:+.2}%", dom, ret);
-            Some(decision::BtcMarketContext { dominance: dom, btc_return_24h: ret })
-        }
-        _ => {
-            warn!("BTC candles unavailable — dominance filter disabled this cycle");
-            None
-        }
+    // BTC 24h return: compare first vs last candle across the 1h window (50 × 1h ≈ 50h).
+    // BTC 4h return: first vs last candle in the 4h window (used for relative perf signal).
+    // Both fetched same-cycle so always fresh.
+    let (btc_ret_24h, btc_ret_4h): (f64, f64) = {
+        let candles_1h = market.fetch_market_data("BTC").await;
+        let candles_4h = market.fetch_market_data_4h("BTC").await;
+        let ret_24h = match &candles_1h {
+            Ok(c) if c.len() >= 2 => {
+                let f = c.first().unwrap().close;
+                let l = c.last().unwrap().close;
+                if f > 0.0 { (l - f) / f * 100.0 } else { 0.0 }
+            }
+            _ => 0.0,
+        };
+        let ret_4h = match &candles_4h {
+            Ok(c) if c.len() >= 2 => {
+                let f = c.first().unwrap().close;
+                let l = c.last().unwrap().close;
+                if f > 0.0 { (l - f) / f * 100.0 } else { 0.0 }
+            }
+            _ => 0.0,
+        };
+        (ret_24h, ret_4h)
     };
+
+    let btc_dom = *btc_dominance.read().await;
+    if btc_ret_24h != 0.0 || btc_ret_4h != 0.0 {
+        info!("🟠 BTC ctx: dom={:.1}%  24h={:+.2}%  4h={:+.2}%", btc_dom, btc_ret_24h, btc_ret_4h);
+    } else {
+        warn!("BTC candles unavailable — dominance filter disabled this cycle");
+    }
 
     // ── Tier 2: analyse candidates ────────────────────────────────────────
     let total = candidates.len();
@@ -408,7 +423,7 @@ async fn run_cycle(
         set_status(bot_state,
             &format!("🔬 Analysing {}/{}: {}…", i + 1, total, sym)).await;
 
-        match analyse_symbol(sym, market, hl, db, config, bot_state, weights, sent_cache, fund_cache, btc_ctx.as_ref()).await {
+        match analyse_symbol(sym, market, hl, db, config, bot_state, weights, sent_cache, fund_cache, btc_dom, btc_ret_24h, btc_ret_4h).await {
             Ok(Some(dec)) if dec.action != "SKIP" => {
                 info!("💡 {} → {} conf={:.0}%", sym, dec.action, dec.confidence * 100.0);
                 new_decisions.push(DecisionInfo {
@@ -580,29 +595,61 @@ async fn apply_ai_review(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async fn analyse_symbol(
-    symbol:     &str,
-    market:     &Arc<data::MarketClient>,
-    hl:         &Arc<exchange::HyperliquidClient>,
-    db:         &Arc<db::Database>,
-    config:     &config::Config,
-    bot_state:  &SharedState,
-    weights:    &SharedWeights,
-    sent_cache: &SharedSentiment,
-    fund_cache: &SharedFunding,
-    btc_ctx:    Option<&decision::BtcMarketContext>,
+    symbol:       &str,
+    market:       &Arc<data::MarketClient>,
+    hl:           &Arc<exchange::HyperliquidClient>,
+    db:           &Arc<db::Database>,
+    config:       &config::Config,
+    bot_state:    &SharedState,
+    weights:      &SharedWeights,
+    sent_cache:   &SharedSentiment,
+    fund_cache:   &SharedFunding,
+    btc_dom:      f64,   // BTC dominance %
+    btc_ret_24h:  f64,   // BTC 24h return %
+    btc_ret_4h:   f64,   // BTC 4h return % (for relative performance signal)
 ) -> Result<Option<decision::Decision>> {
     let candles = market.fetch_market_data(symbol).await?;
     if candles.len() < 26 { return Ok(None); }
 
-    let ind    = indicators::calculate_all(&candles)?;
-    let ob     = market.fetch_order_book(symbol).await?;
-    let of     = signals::detect_order_flow(&ob)?;
-    let w      = weights.read().await.clone();
-    let sent   = sent_cache.get(symbol).await;
-    let fund   = fund_cache.get(symbol).await;
-    // BTC dominance context is not applied to BTC's own signal (no self-reference)
-    let ctx    = if symbol == "BTC" { None } else { btc_ctx };
-    let dec    = decision::make_decision(&candles, &ind, &of, &w, sent.as_ref(), fund.as_ref(), ctx)?;
+    // Fetch 4h candles for multi-timeframe confirmation and relative performance.
+    // Non-fatal: if unavailable, HTF filter is skipped (scale = 1.0).
+    let (htf, asset_return_4h) = match market.fetch_market_data_4h(symbol).await {
+        Ok(c4h) if c4h.len() >= 26 => {
+            let htf_ind = indicators::calculate_htf(&c4h);
+            let ret = if c4h.len() >= 2 {
+                let f = c4h.first().unwrap().close;
+                let l = c4h.last().unwrap().close;
+                if f > 0.0 { (l - f) / f * 100.0 } else { 0.0 }
+            } else { 0.0 };
+            (Some(htf_ind), ret)
+        }
+        _ => (None, 0.0),
+    };
+
+    let ind  = indicators::calculate_all(&candles)?;
+    let ob   = market.fetch_order_book(symbol).await?;
+    let of   = signals::detect_order_flow(&ob)?;
+    let w    = weights.read().await.clone();
+    let sent = sent_cache.get(symbol).await;
+    let fund = fund_cache.get(symbol).await;
+
+    // BTC dominance context not applied to BTC itself (no self-reference).
+    let ctx = if symbol == "BTC" {
+        None
+    } else {
+        Some(decision::BtcMarketContext {
+            dominance:       btc_dom,
+            btc_return_24h:  btc_ret_24h,
+            btc_return_4h:   btc_ret_4h,
+            asset_return_4h,
+        })
+    };
+
+    let dec = decision::make_decision(
+        &candles, &ind, &of, &w,
+        sent.as_ref(), fund.as_ref(),
+        ctx.as_ref(), htf.as_ref(),
+    )?;
 
     log::debug!("{}: RSI={:.1} trend={:.2}% MACD={:.5} ATR={:.4} → {}",
         symbol, ind.rsi, ind.trend, ind.macd, ind.atr, dec.action);

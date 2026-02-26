@@ -43,6 +43,11 @@ pub struct FundingData {
     /// Last realised 8-hour funding rate (e.g. 0.0001 = 0.01 %).
     /// Positive = longs pay shorts.  Negative = shorts pay longs.
     pub funding_rate: f64,
+    /// Change in funding rate vs the previous cache refresh cycle.
+    /// Positive = funding rising (longs becoming more crowded / expensive).
+    /// Negative = funding falling (de-levering, shorts building up).
+    /// Zero      = first observation or no meaningful change.
+    pub funding_delta: f64,
 }
 
 impl FundingData {
@@ -98,6 +103,8 @@ struct PremiumIndexItem {
 
 struct CacheInner {
     data:       HashMap<String, FundingData>,
+    /// Rates from the previous refresh — used to compute `funding_delta`.
+    prev_rates: HashMap<String, f64>,
     last_fetch: Option<Instant>,
 }
 
@@ -119,6 +126,7 @@ impl FundingCache {
                 .unwrap_or_default(),
             inner: RwLock::new(CacheInner {
                 data:       HashMap::new(),
+                prev_rates: HashMap::new(),
                 last_fetch: None,
             }),
         })
@@ -135,11 +143,17 @@ impl FundingCache {
                 return r.data.get(symbol).cloned();
             }
         }
-        // Cache is stale — refresh
-        match self.fetch_all().await {
+        // Cache is stale — snapshot current rates as prev before refreshing
+        let prev_rates: HashMap<String, f64> = {
+            let r = self.inner.read().await;
+            r.data.iter().map(|(k, v)| (k.clone(), v.funding_rate)).collect()
+        };
+
+        match self.fetch_all(&prev_rates).await {
             Ok(map) => {
                 let result = map.get(symbol).cloned();
                 let mut w  = self.inner.write().await;
+                w.prev_rates = prev_rates;
                 w.data       = map;
                 w.last_fetch = Some(Instant::now());
                 result
@@ -152,8 +166,10 @@ impl FundingCache {
     }
 
     /// Pre-warm the cache at startup (avoids first-cycle fetch latency).
+    /// First warm has no previous rates, so `funding_delta` will be 0.0.
     pub async fn warm(&self) {
-        match self.fetch_all().await {
+        let empty_prev: HashMap<String, f64> = HashMap::new();
+        match self.fetch_all(&empty_prev).await {
             Ok(map) => {
                 log::info!(
                     "💰 Funding rates: pre-warmed {} USDT perps  \
@@ -173,7 +189,8 @@ impl FundingCache {
     // ── Private ───────────────────────────────────────────────────────────────
 
     /// Fetch the full Binance `premiumIndex` snapshot (all symbols, one call).
-    async fn fetch_all(&self) -> Result<HashMap<String, FundingData>> {
+    /// `prev` provides the rates from the last refresh for delta computation.
+    async fn fetch_all(&self, prev: &HashMap<String, f64>) -> Result<HashMap<String, FundingData>> {
         let resp = self.client
             .get("https://fapi.binance.com/fapi/v1/premiumIndex")
             .send()
@@ -196,9 +213,13 @@ impl FundingCache {
             // e.g. "ETHUSDT" → "ETH", "SOLUSDT" → "SOL"
             let sym = item.symbol.trim_end_matches("USDT").to_string();
 
+            // Delta vs previous cycle (0 on first observation)
+            let delta = prev.get(&sym).map(|&p| rate - p).unwrap_or(0.0);
+
             map.insert(sym.clone(), FundingData {
-                symbol:       sym,
-                funding_rate: rate,
+                symbol:        sym,
+                funding_rate:  rate,
+                funding_delta: delta,
             });
         }
 

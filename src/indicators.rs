@@ -72,6 +72,27 @@ pub struct TechnicalIndicators {
     pub vwap:             f64,
     /// (close − vwap) / vwap × 100.  Positive = price trading above VWAP (bull bias).
     pub vwap_pct:         f64,
+
+    // ── Volatility regime ─────────────────────────────────────────────────────
+    /// ATR expansion ratio: current ATR(14) ÷ mean ATR over the prior 24 bars.
+    /// > 1.5 = breakout expansion (override ranging regime → trending).
+    /// < 0.7 = volatility compression (likely squeeze / low-conviction).
+    /// = 1.0 = normal / unavailable.
+    pub atr_expansion_ratio: f64,
+}
+
+// ─────────────────────────── Higher-timeframe indicators ──────────────────────
+
+/// Indicators computed from the 4-hour candle series.
+///
+/// Used as a multi-timeframe confirmation filter: a 1h signal that is also
+/// confirmed on the 4h chart has substantially higher IC than an unconfirmed one.
+#[derive(Debug, Clone, Default)]
+pub struct HtfIndicators {
+    /// RSI(14) on the 4h series.  <45 = oversold context; >55 = overbought context.
+    pub rsi_4h:     f64,
+    /// Z-score(20) on the 4h series.  |>1.2| = statistically extreme on higher TF.
+    pub z_score_4h: f64,
 }
 
 // ─────────────────────────── Public entry point ──────────────────────────────
@@ -100,6 +121,8 @@ pub fn calculate_all(candles: &[PriceData]) -> Result<TechnicalIndicators> {
     let z_score                    = calc_z_score(&closes, 20);
     let volume_ratio               = calc_volume_ratio(candles, 20);
     let (vwap, vwap_pct)           = calc_vwap(candles, &closes);
+    // ATR expansion: compare current 14-bar mean TR vs prior 24-bar mean TR
+    let atr_expansion_ratio        = calc_atr_expansion_ratio(&highs, &lows, &closes, 14, 24);
 
     Ok(TechnicalIndicators {
         rsi,
@@ -120,6 +143,7 @@ pub fn calculate_all(candles: &[PriceData]) -> Result<TechnicalIndicators> {
         volume_ratio,
         vwap,
         vwap_pct,
+        atr_expansion_ratio,
     })
 }
 
@@ -360,6 +384,62 @@ fn calc_volume_ratio(candles: &[PriceData], period: usize) -> f64 {
         / period as f64;
     let cur_vol = candles[n - 1].volume;
     if avg_vol > 0.0 { (cur_vol / avg_vol).clamp(0.1, 5.0) } else { 1.0 }
+}
+
+/// ATR expansion ratio: current `period`-bar mean TR ÷ prior `lookback`-bar mean TR.
+///
+/// Compares recent volatility against the recent historical baseline.
+/// > 1.5 = breakout / expanding range (acts as regime override → Trending)
+/// < 0.7 = compression / squeeze (low-conviction environment)
+/// = 1.0 = default / insufficient data
+fn calc_atr_expansion_ratio(highs: &[f64], lows: &[f64], closes: &[f64], period: usize, lookback: usize) -> f64 {
+    let n = closes.len();
+    if n < period + lookback + 1 { return 1.0; }
+
+    // Build True Range series (length = n - 1)
+    let trs: Vec<f64> = (1..n)
+        .map(|i| {
+            f64::max(
+                highs[i] - lows[i],
+                f64::max(
+                    (highs[i] - closes[i - 1]).abs(),
+                    (lows[i]  - closes[i - 1]).abs(),
+                ),
+            )
+        })
+        .collect();
+
+    let m = trs.len();
+    if m < period + lookback { return 1.0; }
+
+    // Current window: last `period` TRs
+    let current_mean = trs[m - period..].iter().sum::<f64>() / period as f64;
+    // Historical window: the `lookback` TRs immediately before the current window
+    let hist_end   = m - period;
+    let hist_start = hist_end.saturating_sub(lookback);
+    let hist_count = hist_end - hist_start;
+    if hist_count == 0 { return 1.0; }
+    let hist_mean = trs[hist_start..hist_end].iter().sum::<f64>() / hist_count as f64;
+
+    if hist_mean < 1e-12 { return 1.0; }
+    (current_mean / hist_mean).clamp(0.1, 5.0)
+}
+
+// ─────────────────────────── HTF entry point ─────────────────────────────────
+
+/// Compute higher-timeframe (4h) indicators from the provided candle slice.
+///
+/// Returns `HtfIndicators::default()` (rsi=50, z=0) when insufficient data.
+/// Requires ≥ 26 candles for meaningful results.
+pub fn calculate_htf(candles: &[PriceData]) -> HtfIndicators {
+    if candles.len() < 26 {
+        return HtfIndicators::default();
+    }
+    let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
+    HtfIndicators {
+        rsi_4h:     calc_rsi_wilder(&closes, 14),
+        z_score_4h: calc_z_score(&closes, 20),
+    }
 }
 
 /// 24-bar VWAP (typical price × volume, averaged) and the current price's
