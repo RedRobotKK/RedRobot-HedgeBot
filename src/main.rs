@@ -11,6 +11,29 @@
 //!   • Pyramid: add to winners (existing >1R profit + new signal = +50% add-on)
 //!   • Online learning: signal weights updated after every close/partial
 
+// ─────────────────────────── Risk constants ───────────────────────────────────
+/// Minimum signal confidence for new entries. Below this the trade is skipped.
+const MIN_CONFIDENCE: f64 = 0.68;
+/// Maximum fraction of equity at risk per individual trade (stop-distance based).
+const MAX_TRADE_HEAT: f64 = 0.02;   // 2 %
+/// Maximum total fraction of equity at risk across all open positions.
+const MAX_PORTFOLIO_HEAT: f64 = 0.08;  // 8 %
+/// Maximum number of concurrent open positions.
+const MAX_POSITIONS: usize = 4;
+/// Maximum open positions in the same direction (long OR short).
+const MAX_SAME_DIRECTION: usize = 2;
+/// DCA minimum confidence (slightly higher than new-entry minimum).
+const DCA_MIN_CONFIDENCE: f64 = 0.72;
+/// Circuit-breaker drawdown threshold.  Once peak→current drawdown exceeds
+/// this fraction, all new position sizes are scaled down by `CB_SIZE_MULT`.
+const CB_DRAWDOWN_THRESHOLD: f64 = 0.08;  // 8 %
+/// Position-size multiplier applied when the circuit breaker is active.
+const CB_SIZE_MULT: f64 = 0.35;
+/// Upper bound for position size as fraction of free capital (Kelly clamp).
+const MAX_POSITION_PCT: f64 = 0.18;
+/// Lower bound for position size as fraction of free capital.
+const MIN_POSITION_PCT: f64 = 0.01;
+
 mod config;
 mod data;
 mod indicators;
@@ -155,6 +178,18 @@ async fn fetch_btc_dominance() -> Option<f64> {
 
 type SharedBtcDominance = Arc<RwLock<f64>>;
 
+/// Execute one 30-second trading cycle.
+///
+/// Sequence of operations:
+///   1. Tier-1 price fetch — single Hyperliquid `allMids` call (all perps).
+///   2. Update peak equity; increment `cycles_held` on open positions.
+///   3. Position management — trailing stops, R-multiple partials, time exits.
+///   4. Session price snapshot update; candidate list pushed to dashboard.
+///   5. Refresh BTC dominance every 20 cycles.
+///   6. Compute BTC 24h / 4h returns for cross-asset context.
+///   7. Tier-2 analysis — fetch candles + order book for each candidate and
+///      call `analyse_symbol()` which emits entry or skip decisions.
+///   8. Optional Claude AI position review every 10 cycles.
 async fn run_cycle(
     config:          &config::Config,
     market:          &Arc<data::MarketClient>,
@@ -594,6 +629,20 @@ async fn apply_ai_review(
 //  PER-SYMBOL ANALYSIS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// Analyse a single symbol and optionally execute a paper (or live) trade.
+///
+/// Steps:
+///   1. Fetch 50 × 1h candles from Binance; bail early if < 26.
+///   2. Fetch 50 × 4h candles for multi-timeframe confirmation (non-fatal if
+///      unavailable — HTF scaling is skipped).
+///   3. Compute `TechnicalIndicators`, `OrderFlow`, sentiment and funding data.
+///   4. Build `BtcMarketContext` (skipped for BTC itself).
+///   5. Call `decision::make_decision()` to get a `Decision`.
+///   6. If paper mode and action ≠ SKIP → `execute_paper_trade()`.
+///      If live mode → `risk::should_trade()` gate → `hl.place_order()`.
+///
+/// Returns `Ok(Some(Decision))` even for SKIP decisions so the dashboard can
+/// show them; returns `Ok(None)` when candle data is insufficient.
 async fn analyse_symbol(
     symbol:       &str,
     market:       &Arc<data::MarketClient>,
@@ -678,27 +727,32 @@ async fn analyse_symbol(
 /// Priority order:
 ///   1. If half-Kelly available (≥5 trades): Kelly × confidence_scale × Sharpe_mult
 ///   2. Fallback confidence tiers × Sharpe_mult
-///   Clamped to [1%, 18%].
-fn position_size_pct(confidence: f64, metrics: &PerformanceMetrics) -> f64 {
+///
+/// The circuit-breaker multiplier (`CB_SIZE_MULT = 0.35`) is applied here when
+/// the peak→current equity drawdown exceeds `CB_DRAWDOWN_THRESHOLD` (8%).
+///
+/// Result is clamped to [`MIN_POSITION_PCT`, `MAX_POSITION_PCT`].
+fn position_size_pct(confidence: f64, metrics: &PerformanceMetrics, in_circuit_breaker: bool) -> f64 {
     let sharpe_mult = metrics.size_multiplier();
     let kelly       = metrics.kelly_fraction();
 
     let base = if kelly > 0.0 {
-        // Linear scale: conf=0.65 → 60% of Kelly, conf=1.0 → 100% of Kelly.
-        // (1.0 - 0.6) / (1.0 - 0.65) = 0.4 / 0.35 ≈ 1.143 — the slope.
-        let conf_scale = (0.6 + (confidence - 0.65).max(0.0) * (0.4 / 0.35)).min(1.0);
+        // Linear scale: conf=MIN_CONFIDENCE → 60% of Kelly, conf=1.0 → 100% of Kelly.
+        let slope = 0.4 / (1.0 - MIN_CONFIDENCE);
+        let conf_scale = (0.6 + (confidence - MIN_CONFIDENCE).max(0.0) * slope).min(1.0);
         kelly * conf_scale
     } else {
         // Pre-Kelly fallback tiers (first ~5 trades)
         match confidence {
             c if c >= 0.85 => 0.08,
             c if c >= 0.75 => 0.06,
-            c if c >= 0.65 => 0.04,
+            c if c >= MIN_CONFIDENCE => 0.04,
             _              => 0.03,
         }
     };
 
-    (base * sharpe_mult).clamp(0.01, 0.18)
+    let cb_mult = if in_circuit_breaker { CB_SIZE_MULT } else { 1.0 };
+    (base * sharpe_mult * cb_mult).clamp(MIN_POSITION_PCT, MAX_POSITION_PCT)
 }
 
 /// Fraction of equity at risk for this specific trade (stop-loss based).
@@ -721,6 +775,26 @@ fn portfolio_heat(positions: &[PaperPosition], equity: f64) -> f64 {
 //  ENTRY EXECUTION
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// Evaluate and execute a new paper-trade entry (or pyramid / DCA on existing).
+///
+/// Decision tree for an existing position on `symbol`:
+///   - **Same side, profitable (≥ 1R)**: pyramid (+50% of current size).
+///   - **Same side, mild loss (-0.15R to -0.75R) + confidence ≥ DCA_MIN_CONFIDENCE**:
+///     DCA (add 50%, recompute average entry and stop).
+///   - **Same side, other**: skip (hold position).
+///   - **Opposite side, confidence < MIN_CONFIDENCE**: ignore (no flip).
+///   - **Opposite side, confidence ≥ MIN_CONFIDENCE**: close current, open new.
+///
+/// For a new position, all six guards must pass:
+///   1. `confidence ≥ MIN_CONFIDENCE` (0.68)
+///   2. Open positions < `MAX_POSITIONS` (4)
+///   3. Same-direction positions < `MAX_SAME_DIRECTION` (2)
+///   4. Sufficient free capital (`size_usd ≥ $2`)
+///   5. Per-trade heat ≤ `MAX_TRADE_HEAT` (2% of equity) — scales down if over
+///   6. Portfolio heat < `MAX_PORTFOLIO_HEAT` (8% of equity)
+///
+/// Circuit breaker: if peak→current drawdown > `CB_DRAWDOWN_THRESHOLD` (8%),
+/// position size is multiplied by `CB_SIZE_MULT` (0.35).
 async fn execute_paper_trade(
     symbol:    &str,
     dec:       &decision::Decision,
@@ -748,8 +822,8 @@ async fn execute_paper_trade(
                 }
 
                 // ── Same direction: DCA DOWN on moderate loser with conviction ──
-                // Conditions: between -0.15R and -0.75R, ≤2 DCA add-ons, signal confidence ≥ 0.72
-                if r_mult < -0.15 && r_mult > -0.75 && pos.dca_count < 2 && dec.confidence >= 0.72 {
+                // Conditions: between -0.15R and -0.75R, ≤2 DCA add-ons, signal confidence ≥ DCA_MIN_CONFIDENCE
+                if r_mult < -0.15 && r_mult > -0.75 && pos.dca_count < 2 && dec.confidence >= DCA_MIN_CONFIDENCE {
                     drop(s);
                     dca_position(symbol, dec, ind, bot_state).await;
                     return;
@@ -760,10 +834,10 @@ async fn execute_paper_trade(
             }
 
             // ── Opposite side: ONLY reverse on high-confidence signal ──
-            // Require ≥0.68 confidence to avoid noise flipping existing positions.
-            if dec.confidence < 0.68 {
-                info!("⏸  {} opposing signal ignored (conf {:.0}% < 68%) — holding {} position",
-                      symbol, dec.confidence * 100.0, pos.side);
+            // Require ≥MIN_CONFIDENCE to avoid noise flipping existing positions.
+            if dec.confidence < MIN_CONFIDENCE {
+                info!("⏸  {} opposing signal ignored (conf {:.0}% < {:.0}%) — holding {} position",
+                      symbol, dec.confidence * 100.0, MIN_CONFIDENCE * 100.0, pos.side);
                 return;
             }
             // Clone values before dropping the read guard to satisfy the borrow checker
@@ -778,10 +852,11 @@ async fn execute_paper_trade(
     }
 
     // ── Minimum confidence gate ────────────────────────────────────────────
-    // Only enter trades where the signal is genuinely strong. Weak-confidence
-    // entries (< 0.68) generated 0W/14L in choppy markets — not worth the risk.
-    if dec.confidence < 0.68 {
-        info!("⚠ {} skipped — confidence {:.0}% below 68% minimum", symbol, dec.confidence * 100.0);
+    // Only enter trades where the signal is genuinely strong.
+    // Signals below MIN_CONFIDENCE generated 0W/14L in choppy markets.
+    if dec.confidence < MIN_CONFIDENCE {
+        info!("⚠ {} skipped — confidence {:.0}% below {:.0}% minimum",
+              symbol, dec.confidence * 100.0, MIN_CONFIDENCE * 100.0);
         return;
     }
 
@@ -790,19 +865,36 @@ async fn execute_paper_trade(
 
     let mut s     = bot_state.write().await;
     let metrics   = s.metrics.clone();
-    let pct       = position_size_pct(dec.confidence, &metrics);
-    let mut size_usd  = s.capital * pct;
     let equity    = s.capital + s.positions.iter().map(|p| p.size_usd + p.unrealised_pnl).sum::<f64>();
 
-    // Guard: max 4 concurrent positions (reduced from 8 — quality over quantity)
-    if s.positions.len() >= 4 {
-        info!("⚠ {} skipped — max 4 positions open", symbol);
+    // ── Circuit breaker ───────────────────────────────────────────────────
+    // When peak→current drawdown exceeds CB_DRAWDOWN_THRESHOLD (8%), new
+    // position sizes are scaled to CB_SIZE_MULT (0.35×) to limit further
+    // exposure during adverse market conditions.
+    let drawdown = if s.peak_equity > 0.0 {
+        (s.peak_equity - equity) / s.peak_equity
+    } else {
+        0.0
+    };
+    let in_cb = drawdown > CB_DRAWDOWN_THRESHOLD;
+    if in_cb {
+        info!("🔴 CB ACTIVE — drawdown {:.1}% (>{:.0}%), sizing ×{:.2}",
+              drawdown * 100.0, CB_DRAWDOWN_THRESHOLD * 100.0, CB_SIZE_MULT);
+    }
+
+    let pct          = position_size_pct(dec.confidence, &metrics, in_cb);
+    let mut size_usd = s.capital * pct;
+
+    // Guard: max MAX_POSITIONS concurrent positions (quality over quantity)
+    if s.positions.len() >= MAX_POSITIONS {
+        info!("⚠ {} skipped — max {} positions open", symbol, MAX_POSITIONS);
         return;
     }
-    // Guard: max 2 positions in the same direction (prevent directional overexposure)
+    // Guard: max MAX_SAME_DIRECTION positions per side (prevent directional overexposure)
     let same_dir = s.positions.iter().filter(|p| p.side == target_side).count();
-    if same_dir >= 2 {
-        info!("⚠ {} skipped — already {} {} positions (max 2 per direction)", symbol, same_dir, target_side);
+    if same_dir >= MAX_SAME_DIRECTION {
+        info!("⚠ {} skipped — already {} {} positions (max {} per direction)",
+              symbol, same_dir, target_side, MAX_SAME_DIRECTION);
         return;
     }
     // Guard: min position size
@@ -810,14 +902,14 @@ async fn execute_paper_trade(
         info!("⚠ {} skipped — insufficient capital (${:.2})", symbol, s.capital);
         return;
     }
-    // Guard: per-trade heat ≤ 2% of equity.
+    // Guard: per-trade heat ≤ MAX_TRADE_HEAT (2%) of equity.
     // If the default Kelly/confidence size would exceed the heat limit, scale it
     // down to the maximum allowed size rather than skipping the trade entirely.
     let stop_dist_pct = (dec.entry_price - dec.stop_loss).abs() / dec.entry_price.max(1e-8);
     let t_heat = trade_heat(dec.entry_price, dec.stop_loss, size_usd, equity);
-    if t_heat > 0.02 {
-        // Max size that keeps R-risk at exactly 2% of equity
-        let allowed = 0.02 * equity / stop_dist_pct;
+    if t_heat > MAX_TRADE_HEAT {
+        // Max size that keeps R-risk at exactly MAX_TRADE_HEAT of equity
+        let allowed = MAX_TRADE_HEAT * equity / stop_dist_pct;
         if allowed < 2.0 {
             info!("⚠ {} skipped — stop too tight, min heat size ${:.2} < $2", symbol, allowed);
             return;
@@ -826,10 +918,11 @@ async fn execute_paper_trade(
               symbol, size_usd, allowed, stop_dist_pct * 100.0);
         size_usd = allowed;  // apply the reduction — enforce the heat limit
     }
-    // Guard: total portfolio heat ≤ 8%
+    // Guard: total portfolio heat ≤ MAX_PORTFOLIO_HEAT
     let p_heat = portfolio_heat(&s.positions, equity);
-    if p_heat >= 0.08 {
-        info!("🔥 {} skipped — portfolio heat {:.1}% (max 8%)", symbol, p_heat * 100.0);
+    if p_heat >= MAX_PORTFOLIO_HEAT {
+        info!("🔥 {} skipped — portfolio heat {:.1}% (max {:.0}%)",
+              symbol, p_heat * 100.0, MAX_PORTFOLIO_HEAT * 100.0);
         return;
     }
 

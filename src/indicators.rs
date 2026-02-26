@@ -471,3 +471,335 @@ fn calc_vwap(candles: &[PriceData], closes: &[f64]) -> (f64, f64) {
 
     (vwap, vwap_pct)
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  UNIT TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    /// Build a flat candle slice (all OHLCV = `price`) of length `n`.
+    fn flat_candles(price: f64, n: usize) -> Vec<PriceData> {
+        (0..n).map(|i| PriceData {
+            symbol:    "TEST".to_string(),
+            timestamp: i as i64 * 3_600_000,
+            open:  price, high: price, low: price, close: price,
+            volume: 1000.0,
+        }).collect()
+    }
+
+    /// Arithmetic rising series: close[i] = start + step × i.
+    /// high = close + 0.2×step, low = close − 0.2×step.
+    fn rising_candles(start: f64, step: f64, n: usize) -> Vec<PriceData> {
+        (0..n).map(|i| {
+            let c = start + step * i as f64;
+            PriceData {
+                symbol:    "TEST".to_string(),
+                timestamp: i as i64 * 3_600_000,
+                open:  c - step * 0.1,
+                high:  c + step * 0.2,
+                low:   c - step * 0.2,
+                close: c,
+                volume: 1000.0 + i as f64 * 10.0,
+            }
+        }).collect()
+    }
+
+    fn falling_candles(start: f64, step: f64, n: usize) -> Vec<PriceData> {
+        rising_candles(start, -step, n)
+    }
+
+    // ── RSI ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn rsi_flat_price_is_50() {
+        let closes = vec![100.0f64; 30];
+        let rsi = calc_rsi_wilder(&closes, 14);
+        assert!((rsi - 50.0).abs() < 1.0,
+            "flat RSI should be ~50, got {rsi:.2}");
+    }
+
+    #[test]
+    fn rsi_perpetual_rise_approaches_100() {
+        let closes: Vec<f64> = (0..50).map(|i| 100.0 + i as f64).collect();
+        let rsi = calc_rsi_wilder(&closes, 14);
+        assert!(rsi > 85.0, "rising RSI should be > 85, got {rsi:.2}");
+    }
+
+    #[test]
+    fn rsi_perpetual_fall_approaches_0() {
+        let closes: Vec<f64> = (0..50).map(|i| 200.0 - i as f64).collect();
+        let rsi = calc_rsi_wilder(&closes, 14);
+        assert!(rsi < 15.0, "falling RSI should be < 15, got {rsi:.2}");
+    }
+
+    #[test]
+    fn rsi_always_in_bounds() {
+        let closes: Vec<f64> = (0..60).map(|i| 1.0 + i as f64 * 10.0).collect();
+        let rsi = calc_rsi_wilder(&closes, 14);
+        assert!(rsi >= 0.0 && rsi <= 100.0, "RSI out of [0,100]: {rsi:.4}");
+    }
+
+    // ── Bollinger Bands ───────────────────────────────────────────────────────
+
+    #[test]
+    fn bollinger_flat_price_zero_width() {
+        let closes = vec![50.0f64; 30];
+        let (upper, middle, lower) = calc_bollinger(&closes, 20, 2.0);
+        assert!(upper >= middle && middle >= lower);
+        let width_pct = if middle > 0.0 { (upper - lower) / middle * 100.0 } else { 0.0 };
+        assert!(width_pct < 0.001, "flat BB width should be ~0, got {width_pct:.6}");
+    }
+
+    #[test]
+    fn bollinger_middle_is_sma20() {
+        // close[i] = 100 + i for i in 0..50.  Last 20 closes: [130..149], mean = 139.5
+        let closes: Vec<f64> = (0..50).map(|i| 100.0 + i as f64).collect();
+        let (_, middle, _) = calc_bollinger(&closes, 20, 2.0);
+        assert!((middle - 139.5).abs() < 0.01,
+            "Bollinger middle should be 139.5, got {middle:.4}");
+    }
+
+    #[test]
+    fn bollinger_upper_lower_symmetric() {
+        let closes: Vec<f64> = (0..30).map(|i| 100.0 + i as f64).collect();
+        let (upper, middle, lower) = calc_bollinger(&closes, 20, 2.0);
+        let diff_up   = upper  - middle;
+        let diff_down = middle - lower;
+        assert!((diff_up - diff_down).abs() < 1e-8,
+            "Bollinger bands not symmetric: up={diff_up:.8} down={diff_down:.8}");
+    }
+
+    // ── MACD ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn macd_flat_price_is_zero() {
+        let closes = vec![100.0f64; 50];
+        let (macd, _, _) = calc_macd_proper(&closes);
+        assert!(macd.abs() < 1e-6, "flat MACD should be ~0, got {macd:.8}");
+    }
+
+    #[test]
+    fn macd_rising_is_positive() {
+        let closes: Vec<f64> = (0..50).map(|i| 100.0 + i as f64).collect();
+        let (macd, _, _) = calc_macd_proper(&closes);
+        assert!(macd > 0.0, "rising MACD should be positive, got {macd:.6}");
+    }
+
+    #[test]
+    fn macd_falling_is_negative() {
+        let closes: Vec<f64> = (0..50).map(|i| 200.0 - i as f64).collect();
+        let (macd, _, _) = calc_macd_proper(&closes);
+        assert!(macd < 0.0, "falling MACD should be negative, got {macd:.6}");
+    }
+
+    #[test]
+    fn macd_histogram_invariant() {
+        // histogram must always equal macd_line - signal_line
+        let closes: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 0.5).collect();
+        let (line, signal, hist) = calc_macd_proper(&closes);
+        assert!((hist - (line - signal)).abs() < 1e-10,
+            "histogram {hist:.10} ≠ line - signal {:.10}", line - signal);
+    }
+
+    // ── ATR ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn atr_flat_price_is_zero() {
+        let n = 30;
+        let highs  = vec![100.0f64; n];
+        let lows   = vec![100.0f64; n];
+        let closes = vec![100.0f64; n];
+        let atr = calc_atr_wilder(&highs, &lows, &closes, 14);
+        assert!(atr < 1e-6, "flat ATR should be ~0, got {atr:.8}");
+    }
+
+    #[test]
+    fn atr_is_positive_for_volatile_series() {
+        let candles = rising_candles(100.0, 2.0, 50);
+        let h: Vec<f64> = candles.iter().map(|c| c.high).collect();
+        let l: Vec<f64> = candles.iter().map(|c| c.low).collect();
+        let c: Vec<f64> = candles.iter().map(|c| c.close).collect();
+        let atr = calc_atr_wilder(&h, &l, &c, 14);
+        assert!(atr > 0.0, "volatile ATR should be positive, got {atr:.4}");
+    }
+
+    #[test]
+    fn atr_approximate_for_known_series() {
+        // rising_candles step=1 → high=close+0.2, low=close-0.2 → TR ≈ 0.8 per bar
+        let candles = rising_candles(100.0, 1.0, 50);
+        let h: Vec<f64> = candles.iter().map(|c| c.high).collect();
+        let l: Vec<f64> = candles.iter().map(|c| c.low).collect();
+        let c: Vec<f64> = candles.iter().map(|c| c.close).collect();
+        let atr = calc_atr_wilder(&h, &l, &c, 14);
+        assert!((atr - 0.8).abs() < 0.2, "ATR for step=1 should ≈ 0.8, got {atr:.4}");
+    }
+
+    // ── ADX ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn adx_always_in_bounds() {
+        let candles = rising_candles(100.0, 1.0, 60);
+        let h: Vec<f64> = candles.iter().map(|c| c.high).collect();
+        let l: Vec<f64> = candles.iter().map(|c| c.low).collect();
+        let c: Vec<f64> = candles.iter().map(|c| c.close).collect();
+        let adx = calc_adx(&h, &l, &c, 14);
+        assert!(adx >= 0.0 && adx <= 100.0, "ADX out of [0,100]: {adx:.4}");
+    }
+
+    #[test]
+    fn adx_strong_uptrend_exceeds_threshold() {
+        let candles = rising_candles(100.0, 2.0, 60);
+        let h: Vec<f64> = candles.iter().map(|c| c.high).collect();
+        let l: Vec<f64> = candles.iter().map(|c| c.low).collect();
+        let c: Vec<f64> = candles.iter().map(|c| c.close).collect();
+        let adx = calc_adx(&h, &l, &c, 14);
+        assert!(adx > 27.0, "strong uptrend ADX should be > 27, got {adx:.2}");
+    }
+
+    // ── Z-score ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn z_score_flat_is_zero() {
+        let closes = vec![100.0f64; 30];
+        let z = calc_z_score(&closes, 20);
+        assert!(z.abs() < 1e-6, "flat Z-score should be 0, got {z:.8}");
+    }
+
+    #[test]
+    fn z_score_rising_is_positive() {
+        let closes: Vec<f64> = (0..50).map(|i| 100.0 + i as f64).collect();
+        let z = calc_z_score(&closes, 20);
+        assert!(z > 0.0, "rising Z-score should be positive, got {z:.4}");
+    }
+
+    #[test]
+    fn z_score_falling_is_negative() {
+        let closes: Vec<f64> = (0..50).map(|i| 200.0 - i as f64).collect();
+        let z = calc_z_score(&closes, 20);
+        assert!(z < 0.0, "falling Z-score should be negative, got {z:.4}");
+    }
+
+    // ── ATR expansion ratio ───────────────────────────────────────────────────
+
+    #[test]
+    fn atr_expansion_flat_returns_one() {
+        // flat series → TR=0 everywhere → hist_mean < ε → returns 1.0 guard
+        let candles = flat_candles(100.0, 60);
+        let h: Vec<f64> = candles.iter().map(|c| c.high).collect();
+        let l: Vec<f64> = candles.iter().map(|c| c.low).collect();
+        let c: Vec<f64> = candles.iter().map(|c| c.close).collect();
+        let ratio = calc_atr_expansion_ratio(&h, &l, &c, 14, 24);
+        assert!((ratio - 1.0).abs() < 0.01,
+            "flat expansion ratio should be 1.0, got {ratio:.4}");
+    }
+
+    #[test]
+    fn atr_expansion_spike_exceeds_1_5() {
+        // 40 quiet bars then 14 volatile bars → ratio should exceed 1.5
+        let mut highs  = vec![100.1f64; 40];
+        let mut lows   = vec![99.9f64;  40];
+        let mut closes = vec![100.0f64; 40];
+        for _ in 0..14 {
+            highs.push(105.0);
+            lows.push(95.0);
+            closes.push(100.0);
+        }
+        let ratio = calc_atr_expansion_ratio(&highs, &lows, &closes, 14, 24);
+        assert!(ratio > 1.5,
+            "post-spike expansion ratio should exceed 1.5, got {ratio:.4}");
+    }
+
+    // ── calculate_all guards ──────────────────────────────────────────────────
+
+    #[test]
+    fn calculate_all_requires_26_candles() {
+        let candles = flat_candles(100.0, 25);
+        assert!(calculate_all(&candles).is_err(),
+            "should fail with < 26 candles");
+    }
+
+    #[test]
+    fn calculate_all_succeeds_at_26_candles() {
+        let candles = rising_candles(100.0, 1.0, 26);
+        assert!(calculate_all(&candles).is_ok(),
+            "should succeed with exactly 26 candles");
+    }
+
+    #[test]
+    fn calculate_all_all_fields_finite() {
+        let candles = rising_candles(100.0, 0.5, 200);
+        let ind = calculate_all(&candles).unwrap();
+        assert!(ind.rsi.is_finite());
+        assert!(ind.atr.is_finite());
+        assert!(ind.adx.is_finite());
+        assert!(ind.macd.is_finite());
+        assert!(ind.z_score.is_finite());
+        assert!(ind.vwap.is_finite());
+        assert!(ind.atr_expansion_ratio.is_finite());
+    }
+
+    #[test]
+    fn calculate_all_zero_volume_no_panic() {
+        let mut candles = rising_candles(100.0, 1.0, 50);
+        for c in candles.iter_mut() { c.volume = 0.0; }
+        assert!(calculate_all(&candles).is_ok(),
+            "zero-volume candles should not panic");
+    }
+
+    // ── HtfIndicators ────────────────────────────────────────────────────────
+
+    #[test]
+    fn htf_defaults_on_short_series() {
+        let candles = flat_candles(100.0, 10);
+        let htf = calculate_htf(&candles);
+        assert_eq!(htf.rsi_4h,     50.0, "htf short-series rsi should default to 50");
+        assert_eq!(htf.z_score_4h,  0.0, "htf short-series z should default to 0");
+    }
+
+    #[test]
+    fn htf_rising_gives_high_rsi_positive_z() {
+        let candles = rising_candles(100.0, 2.0, 40);
+        let htf = calculate_htf(&candles);
+        assert!(htf.rsi_4h > 50.0,
+            "rising htf RSI should be > 50, got {:.2}", htf.rsi_4h);
+        assert!(htf.z_score_4h > 0.0,
+            "rising htf Z-score should be positive, got {:.4}", htf.z_score_4h);
+    }
+
+    #[test]
+    fn htf_falling_gives_low_rsi_negative_z() {
+        let candles = falling_candles(200.0, 2.0, 40);
+        let htf = calculate_htf(&candles);
+        assert!(htf.rsi_4h < 50.0,
+            "falling htf RSI should be < 50, got {:.2}", htf.rsi_4h);
+        assert!(htf.z_score_4h < 0.0,
+            "falling htf Z-score should be negative, got {:.4}", htf.z_score_4h);
+    }
+
+    // ── EMA cross ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn ema_cross_positive_in_uptrend() {
+        let candles = rising_candles(100.0, 1.0, 50);
+        let ind = calculate_all(&candles).unwrap();
+        assert!(ind.ema8 > ind.ema21,
+            "uptrend: EMA8 ({:.4}) should > EMA21 ({:.4})", ind.ema8, ind.ema21);
+        assert!(ind.ema_cross_pct > 0.0,
+            "uptrend ema_cross_pct should be positive, got {:.4}", ind.ema_cross_pct);
+    }
+
+    #[test]
+    fn ema_cross_negative_in_downtrend() {
+        let candles = falling_candles(200.0, 1.0, 50);
+        let ind = calculate_all(&candles).unwrap();
+        assert!(ind.ema8 < ind.ema21,
+            "downtrend: EMA8 ({:.4}) should < EMA21 ({:.4})", ind.ema8, ind.ema21);
+        assert!(ind.ema_cross_pct < 0.0,
+            "downtrend ema_cross_pct should be negative, got {:.4}", ind.ema_cross_pct);
+    }
+}
