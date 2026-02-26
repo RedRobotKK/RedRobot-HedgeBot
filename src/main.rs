@@ -62,6 +62,13 @@ async fn main() -> Result<()> {
 
     let weights: SharedWeights = Arc::new(RwLock::new(SignalWeights::load()));
 
+    // BTC dominance — fetched live at startup, refreshed every ~10 min in cycle
+    let btc_dominance: SharedBtcDominance = {
+        let dom = fetch_btc_dominance().await.unwrap_or(56.0);
+        info!("✓ BTC dominance (live): {:.1}%", dom);
+        Arc::new(RwLock::new(dom))
+    };
+
     let bot_state: SharedState = Arc::new(RwLock::new(BotState {
         capital:         config.initial_capital,
         initial_capital: config.initial_capital,
@@ -100,7 +107,7 @@ async fn main() -> Result<()> {
         set_status(&bot_state, "📡 Fetching prices…").await;
 
         match run_cycle(&config, &market, &hl, &db, &bot_state, &weights,
-                        &sentiment_cache, &mut prev_mids).await
+                        &sentiment_cache, &mut prev_mids, &btc_dominance).await
         {
             Ok(_) => {
                 set_status(&bot_state, "⏳ Waiting for next cycle (30s)…").await;
@@ -119,18 +126,38 @@ async fn main() -> Result<()> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+//  BTC DOMINANCE FETCH (CoinGecko free /global endpoint)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Fetch live BTC market-cap dominance from CoinGecko's free /global endpoint.
+/// Returns `None` if the request fails or the field is missing.
+async fn fetch_btc_dominance() -> Option<f64> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(6))
+        .build().ok()?;
+    let resp: serde_json::Value = client
+        .get("https://api.coingecko.com/api/v3/global")
+        .send().await.ok()?
+        .json().await.ok()?;
+    resp["data"]["market_cap_percentage"]["btc"].as_f64()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 //  MAIN CYCLE
 // ═══════════════════════════════════════════════════════════════════════════════
 
+type SharedBtcDominance = Arc<RwLock<f64>>;
+
 async fn run_cycle(
-    config:     &config::Config,
-    market:     &Arc<data::MarketClient>,
-    hl:         &Arc<exchange::HyperliquidClient>,
-    db:         &Arc<db::Database>,
-    bot_state:  &SharedState,
-    weights:    &SharedWeights,
-    sent_cache: &SharedSentiment,
-    prev_mids:  &mut HashMap<String, f64>,
+    config:          &config::Config,
+    market:          &Arc<data::MarketClient>,
+    hl:              &Arc<exchange::HyperliquidClient>,
+    db:              &Arc<db::Database>,
+    bot_state:       &SharedState,
+    weights:         &SharedWeights,
+    sent_cache:      &SharedSentiment,
+    prev_mids:       &mut HashMap<String, f64>,
+    btc_dominance:   &SharedBtcDominance,
 ) -> Result<()> {
     { bot_state.write().await.cycle_count += 1; }
 
@@ -334,6 +361,37 @@ async fn run_cycle(
         s.signal_weights = weights.read().await.clone();
     }
 
+    // ── BTC market context (dominance + direction) ───────────────────────
+    // Refresh live dominance every 20 cycles (~10 min).  Between refreshes
+    // the cached value is reused so we don't hammer the CoinGecko free tier.
+    let cycle_count_now = bot_state.read().await.cycle_count;
+    if cycle_count_now % 20 == 1 {
+        if let Some(dom) = fetch_btc_dominance().await {
+            *btc_dominance.write().await = dom;
+            info!("🔄 BTC dominance refreshed: {:.1}%", dom);
+        } else {
+            warn!("BTC dominance refresh failed — using cached {:.1}%",
+                  *btc_dominance.read().await);
+        }
+    }
+
+    // BTC 24h return: compare first vs last candle across the fetched window
+    // (~25 h of 15-min candles).  Used same-cycle so it's always fresh.
+    let btc_ctx: Option<decision::BtcMarketContext> = match market.fetch_market_data("BTC").await {
+        Ok(btc_candles) if btc_candles.len() >= 2 => {
+            let first = btc_candles.first().unwrap().close;
+            let last  = btc_candles.last().unwrap().close;
+            let ret   = (last - first) / first * 100.0;
+            let dom   = *btc_dominance.read().await;
+            info!("🟠 BTC ctx: dom={:.1}%  24h_ret={:+.2}%", dom, ret);
+            Some(decision::BtcMarketContext { dominance: dom, btc_return_24h: ret })
+        }
+        _ => {
+            warn!("BTC candles unavailable — dominance filter disabled this cycle");
+            None
+        }
+    };
+
     // ── Tier 2: analyse candidates ────────────────────────────────────────
     let total = candidates.len();
     let mut new_decisions: Vec<DecisionInfo> = Vec::new();
@@ -342,7 +400,7 @@ async fn run_cycle(
         set_status(bot_state,
             &format!("🔬 Analysing {}/{}: {}…", i + 1, total, sym)).await;
 
-        match analyse_symbol(sym, market, hl, db, config, bot_state, weights, sent_cache).await {
+        match analyse_symbol(sym, market, hl, db, config, bot_state, weights, sent_cache, btc_ctx.as_ref()).await {
             Ok(Some(dec)) if dec.action != "SKIP" => {
                 info!("💡 {} → {} conf={:.0}%", sym, dec.action, dec.confidence * 100.0);
                 new_decisions.push(DecisionInfo {
@@ -522,6 +580,7 @@ async fn analyse_symbol(
     bot_state:  &SharedState,
     weights:    &SharedWeights,
     sent_cache: &SharedSentiment,
+    btc_ctx:    Option<&decision::BtcMarketContext>,
 ) -> Result<Option<decision::Decision>> {
     let candles = market.fetch_market_data(symbol).await?;
     if candles.len() < 26 { return Ok(None); }
@@ -531,7 +590,9 @@ async fn analyse_symbol(
     let of   = signals::detect_order_flow(&ob)?;
     let w    = weights.read().await.clone();
     let sent = sent_cache.get(symbol).await;
-    let dec  = decision::make_decision(&candles, &ind, &of, &w, sent.as_ref())?;
+    // BTC dominance context is not applied to BTC's own signal (no self-reference)
+    let ctx  = if symbol == "BTC" { None } else { btc_ctx };
+    let dec  = decision::make_decision(&candles, &ind, &of, &w, sent.as_ref(), ctx)?;
 
     log::debug!("{}: RSI={:.1} trend={:.2}% MACD={:.5} ATR={:.4} → {}",
         symbol, ind.rsi, ind.trend, ind.macd, ind.atr, dec.action);

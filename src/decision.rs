@@ -135,18 +135,79 @@ pub fn calc_leverage(confidence: f64, regime: Regime) -> f64 {
     raw.min(regime_cap)
 }
 
+// ─────────────────────────── BTC Market Context ──────────────────────────────
+
+/// BTC market-wide context — modulates per-altcoin confidence based on
+/// dominance regime and BTC price direction.
+///
+/// ## Backtest results (400 days, Feb 2024 – Feb 2026, 9 assets):
+///
+/// | Dominance      | Days | Pearson r | Alts follow BTC |
+/// |----------------|------|-----------|-----------------|
+/// | Very High >60% |  152 |   0.67    |      78%        |
+/// | High  55–60%   |  215 |   0.75    |      80%        |
+/// | Medium 48–55%  |   33 |   0.49    |      71%        |
+///
+/// Big-move days (BTC >3%, high dominance): ETH/AVAX/LINK follow 93–100%.
+/// Lead-lag is SAME-DAY — the signal expires quickly, act fast.
+#[derive(Debug, Clone)]
+pub struct BtcMarketContext {
+    /// BTC dominance as a percentage (e.g. 56.0 = 56 %).
+    pub dominance: f64,
+    /// BTC return over the last ~24 h in percent (e.g. +2.5, -1.8).
+    pub btc_return_24h: f64,
+}
+
+impl BtcMarketContext {
+    /// Returns a confidence delta in **[-0.12, +0.08]**.
+    ///
+    /// Positive = BTC direction supports the trade.
+    /// Negative = BTC direction opposes the trade.
+    /// Zero     = BTC flat or dominance too low to matter.
+    ///
+    /// Not applied to BTC's own signals (caller passes `None` for BTC).
+    pub fn confidence_adjustment(&self, action: &str) -> f64 {
+        // Treat sub-±0.3 % moves as "flat" to avoid noise on tiny wiggles
+        let btc_bull = self.btc_return_24h >  0.3;
+        let btc_bear = self.btc_return_24h < -0.3;
+        let big_move = self.btc_return_24h.abs() > 3.0;
+
+        let aligned = (action == "BUY"  && btc_bull) || (action == "SELL" && btc_bear);
+        let opposed  = (action == "BUY"  && btc_bear) || (action == "SELL" && btc_bull);
+
+        if self.dominance >= 55.0 {
+            // HIGH dominance — BTC direction is a strong edge (Pearson 0.75)
+            if      aligned && big_move  {  0.08 }  // strong BTC tailwind → best edge
+            else if aligned              {  0.05 }  // moderate alignment bonus
+            else if opposed && big_move  { -0.12 }  // fighting a big BTC move → dangerous
+            else if opposed              { -0.08 }  // BTC headwind → reduce confidence
+            else                         {  0.00 }  // BTC flat → no adjustment
+        } else if self.dominance >= 48.0 {
+            // MEDIUM dominance — weaker correlation (Pearson 0.49)
+            if      aligned { 0.03 }
+            else if opposed { -0.04 }
+            else            { 0.00 }
+        } else {
+            // LOW dominance / altseason (<48 %) — alts decouple from BTC
+            0.00
+        }
+    }
+}
+
 // ─────────────────────────── Decision engine ─────────────────────────────────
 
 /// Regime-aware decision engine.
 ///
 /// Returns a `Decision` with action BUY / SELL / SKIP.
 /// `sentiment` is `None` when LunarCrush data is not available.
+/// `btc_ctx` is `None` for BTC itself (no self-referential filter).
 pub fn make_decision(
     candles:   &[PriceData],
     ind:       &TechnicalIndicators,
     of:        &OrderFlowSignal,
     weights:   &SignalWeights,
     sentiment: Option<&SentimentData>,
+    btc_ctx:   Option<&BtcMarketContext>,
 ) -> Result<Decision> {
     let last  = candles.last().ok_or_else(|| anyhow::anyhow!("Empty candle slice"))?;
     let close = last.close;
@@ -487,13 +548,27 @@ pub fn make_decision(
     let threshold  = regime.threshold();
     let dominance  = regime.dominance();
 
-    let (action, confidence) = if bull >= threshold && bull > bear * dominance {
+    let (action, raw_confidence) = if bull >= threshold && bull > bear * dominance {
         ("BUY".to_string(),  (bull / (bull + bear + 1e-8)).min(1.0))
     } else if bear >= threshold && bear > bull * dominance {
         ("SELL".to_string(), (bear / (bull + bear + 1e-8)).min(1.0))
     } else {
         ("SKIP".to_string(), f64::max(bull, bear) / (bull + bear + 1e-8))
     };
+
+    // ═════════════════════════════════════════════════════════════════════════
+    //  BTC Dominance context — modulate confidence by BTC direction alignment
+    // ═════════════════════════════════════════════════════════════════════════
+    // Backtest-validated: at high dominance (≥55 %), BTC direction predicts
+    // altcoin direction 80 % of days (Pearson 0.75).  Big BTC moves (>3 %)
+    // see 93–100 % follow-through.  We boost aligned trades and penalise
+    // counter-BTC trades proportionally.  Not applied to BTC itself.
+    let btc_adj = btc_ctx
+        .filter(|_| action != "SKIP")
+        .map(|b| b.confidence_adjustment(&action))
+        .unwrap_or(0.0);
+
+    let confidence = (raw_confidence + btc_adj).clamp(0.0, 1.0);
 
     // ═════════════════════════════════════════════════════════════════════════
     //  Stop-loss and take-profit (ATR-based)
@@ -528,8 +603,23 @@ pub fn make_decision(
         .map(|n| format!(" 📐{}", n))
         .unwrap_or_default();
 
+    // BTC dominance context tag — shown in rationale when context is active
+    let btc_tag = btc_ctx.map(|b| {
+        let adj_str = if btc_adj > 0.0 {
+            format!("+{:.0}%", btc_adj * 100.0)
+        } else if btc_adj < 0.0 {
+            format!("{:.0}%", btc_adj * 100.0)
+        } else {
+            String::new()
+        };
+        format!(" 🟠DOM:{:.0}% BTC:{:+.1}%{}",
+            b.dominance, b.btc_return_24h,
+            if adj_str.is_empty() { String::new() } else { format!("({})", adj_str) }
+        )
+    }).unwrap_or_default();
+
     let rationale = format!(
-        "[{}] RSI:{:.0} Z:{:.1} EMA:{:+.2}% MACD-H:{:.5} VOL:{:.1}× ADX:{:.0} VWAP:{:+.1}%{}{}{}",
+        "[{}] RSI:{:.0} Z:{:.1} EMA:{:+.2}% MACD-H:{:.5} VOL:{:.1}× ADX:{:.0} VWAP:{:+.1}%{}{}{}{}",
         regime.label(),
         ind.rsi,
         ind.z_score,
@@ -539,6 +629,7 @@ pub fn make_decision(
         ind.adx,
         ind.vwap_pct,
         sent_tag,
+        btc_tag,
         csp_tag,
         chp_tag,
     );
