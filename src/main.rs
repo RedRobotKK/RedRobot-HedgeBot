@@ -27,6 +27,7 @@ mod candlestick_patterns;
 mod chart_patterns;
 mod ai_reviewer;
 mod coins;
+mod funding;
 
 use anyhow::Result;
 use log::{error, info, warn};
@@ -39,6 +40,7 @@ use web_dashboard::{
 use learner::{SharedWeights, SignalWeights};
 use metrics::PerformanceMetrics;
 use sentiment::{SentimentCache, SharedSentiment};
+use funding::{FundingCache, SharedFunding};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -58,7 +60,12 @@ async fn main() -> Result<()> {
     // LunarCrush sentiment client (pre-warm cache at startup)
     let sentiment_cache: SharedSentiment = SentimentCache::new(config.lunarcrush_api_key.clone());
     sentiment_cache.warm().await;
-    info!("✓ Clients ready (LunarCrush sentiment active)");
+
+    // Binance funding rate cache (pre-warm; refreshes every 3 min automatically)
+    let funding_cache: SharedFunding = FundingCache::new();
+    funding_cache.warm().await;
+
+    info!("✓ Clients ready (LunarCrush sentiment + Binance funding rates active)");
 
     let weights: SharedWeights = Arc::new(RwLock::new(SignalWeights::load()));
 
@@ -107,7 +114,7 @@ async fn main() -> Result<()> {
         set_status(&bot_state, "📡 Fetching prices…").await;
 
         match run_cycle(&config, &market, &hl, &db, &bot_state, &weights,
-                        &sentiment_cache, &mut prev_mids, &btc_dominance).await
+                        &sentiment_cache, &funding_cache, &mut prev_mids, &btc_dominance).await
         {
             Ok(_) => {
                 set_status(&bot_state, "⏳ Waiting for next cycle (30s)…").await;
@@ -156,6 +163,7 @@ async fn run_cycle(
     bot_state:       &SharedState,
     weights:         &SharedWeights,
     sent_cache:      &SharedSentiment,
+    fund_cache:      &SharedFunding,
     prev_mids:       &mut HashMap<String, f64>,
     btc_dominance:   &SharedBtcDominance,
 ) -> Result<()> {
@@ -400,7 +408,7 @@ async fn run_cycle(
         set_status(bot_state,
             &format!("🔬 Analysing {}/{}: {}…", i + 1, total, sym)).await;
 
-        match analyse_symbol(sym, market, hl, db, config, bot_state, weights, sent_cache, btc_ctx.as_ref()).await {
+        match analyse_symbol(sym, market, hl, db, config, bot_state, weights, sent_cache, fund_cache, btc_ctx.as_ref()).await {
             Ok(Some(dec)) if dec.action != "SKIP" => {
                 info!("💡 {} → {} conf={:.0}%", sym, dec.action, dec.confidence * 100.0);
                 new_decisions.push(DecisionInfo {
@@ -580,19 +588,21 @@ async fn analyse_symbol(
     bot_state:  &SharedState,
     weights:    &SharedWeights,
     sent_cache: &SharedSentiment,
+    fund_cache: &SharedFunding,
     btc_ctx:    Option<&decision::BtcMarketContext>,
 ) -> Result<Option<decision::Decision>> {
     let candles = market.fetch_market_data(symbol).await?;
     if candles.len() < 26 { return Ok(None); }
 
-    let ind  = indicators::calculate_all(&candles)?;
-    let ob   = market.fetch_order_book(symbol).await?;
-    let of   = signals::detect_order_flow(&ob)?;
-    let w    = weights.read().await.clone();
-    let sent = sent_cache.get(symbol).await;
+    let ind    = indicators::calculate_all(&candles)?;
+    let ob     = market.fetch_order_book(symbol).await?;
+    let of     = signals::detect_order_flow(&ob)?;
+    let w      = weights.read().await.clone();
+    let sent   = sent_cache.get(symbol).await;
+    let fund   = fund_cache.get(symbol).await;
     // BTC dominance context is not applied to BTC's own signal (no self-reference)
-    let ctx  = if symbol == "BTC" { None } else { btc_ctx };
-    let dec  = decision::make_decision(&candles, &ind, &of, &w, sent.as_ref(), ctx)?;
+    let ctx    = if symbol == "BTC" { None } else { btc_ctx };
+    let dec    = decision::make_decision(&candles, &ind, &of, &w, sent.as_ref(), fund.as_ref(), ctx)?;
 
     log::debug!("{}: RSI={:.1} trend={:.2}% MACD={:.5} ATR={:.4} → {}",
         symbol, ind.rsi, ind.trend, ind.macd, ind.atr, dec.action);

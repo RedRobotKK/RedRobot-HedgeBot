@@ -6,19 +6,20 @@
 //! re-normalised and persisted to `signal_weights.json` so learning survives
 //! restarts.
 //!
-//! ## Signal catalogue (9 total, sum-to-1 normalised)
+//! ## Signal catalogue (10 total, sum-to-1 normalised)
 //!
-//! | Field       | What it measures                                     |
-//! |-------------|------------------------------------------------------|
-//! | rsi         | Wilder's RSI — mean-reversion extremes               |
-//! | bollinger   | Bollinger Band position + squeeze breakout           |
-//! | macd        | MACD histogram momentum                              |
-//! | ema_cross   | EMA(8/21) cross — institutional trend signal        |
-//! | order_flow  | Real-time order-book bid/ask pressure                |
-//! | z_score     | Statistical mean-reversion depth                    |
-//! | volume      | Volume conviction multiplier                         |
-//! | sentiment   | LunarCrush social sentiment                         |
-//! | trend       | Legacy 10-bar % change (kept for file compatibility) |
+//! | Field        | What it measures                                     |
+//! |--------------|------------------------------------------------------|
+//! | rsi          | Wilder's RSI — mean-reversion extremes               |
+//! | bollinger    | Bollinger Band position + squeeze breakout           |
+//! | macd         | MACD histogram momentum                              |
+//! | ema_cross    | EMA(8/21) cross — institutional trend signal        |
+//! | order_flow   | Real-time order-book bid/ask pressure                |
+//! | z_score      | Statistical mean-reversion depth                    |
+//! | volume       | Volume conviction multiplier                         |
+//! | sentiment    | LunarCrush social sentiment                         |
+//! | funding_rate | Perpetual funding rate (contrarian crowd signal)     |
+//! | trend        | Legacy 10-bar % change (kept for file compatibility) |
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -47,33 +48,41 @@ pub struct SignalWeights {
     pub volume:     f64,   // 0.06 — high-volume signals carry more weight
     /// LunarCrush social sentiment (0 when data unavailable).
     #[serde(default = "default_sentiment_weight")]
-    pub sentiment:  f64,   // 0.10 — social signal
+    pub sentiment:     f64,   // 0.09 — social signal
+    /// Perpetual funding rate — contrarian crowd positioning signal.
+    /// High positive funding → longs crowded → bearish lean.
+    /// High negative funding → shorts crowded → bullish lean.
+    /// 0 when Binance futures data is unavailable.
+    #[serde(default = "default_funding_rate_weight")]
+    pub funding_rate:  f64,   // 0.07 — contrarian leverage signal
     // ── Legacy ────────────────────────────────────────────────────────────────
     /// 10-bar % change — kept for backwards compatibility with old weight files.
     /// Functionally absorbed into ema_cross; weight held at min floor.
     #[serde(default = "default_trend_weight")]
-    pub trend:      f64,   // 0.08 — legacy trend signal
+    pub trend:         f64,   // 0.07 — legacy trend signal
 }
 
-fn default_ema_cross_weight() -> f64 { 0.14 }
-fn default_z_score_weight()   -> f64 { 0.08 }
-fn default_volume_weight()    -> f64 { 0.06 }
-fn default_sentiment_weight() -> f64 { 0.10 }
-fn default_trend_weight()     -> f64 { 0.08 }
+fn default_ema_cross_weight()    -> f64 { 0.14 }
+fn default_z_score_weight()      -> f64 { 0.08 }
+fn default_volume_weight()       -> f64 { 0.06 }
+fn default_sentiment_weight()    -> f64 { 0.09 }
+fn default_funding_rate_weight() -> f64 { 0.07 }
+fn default_trend_weight()        -> f64 { 0.07 }
 
 impl Default for SignalWeights {
     fn default() -> Self {
         // Weights sum to 1.0.
         SignalWeights {
-            rsi:        0.16,
-            bollinger:  0.13,
-            macd:       0.13,
-            ema_cross:  0.14,
-            order_flow: 0.12,
-            z_score:    0.08,
-            volume:     0.06,
-            sentiment:  0.10,
-            trend:      0.08,
+            rsi:          0.15,
+            bollinger:    0.12,
+            macd:         0.12,
+            ema_cross:    0.13,
+            order_flow:   0.11,
+            z_score:      0.08,
+            volume:       0.06,
+            sentiment:    0.09,
+            funding_rate: 0.07,
+            trend:        0.07,
         }
     }
 }
@@ -87,9 +96,9 @@ impl SignalWeights {
                 Ok(mut w) => {
                     w.clamp_and_normalise();
                     log::info!(
-                        "📚 Weights: RSI={:.2} BB={:.2} MACD={:.2} EMA={:.2} OF={:.2} Z={:.2} Vol={:.2} Sent={:.2} Trend={:.2}",
+                        "📚 Weights: RSI={:.2} BB={:.2} MACD={:.2} EMA={:.2} OF={:.2} Z={:.2} Vol={:.2} Sent={:.2} FR={:.2} Trend={:.2}",
                         w.rsi, w.bollinger, w.macd, w.ema_cross, w.order_flow,
-                        w.z_score, w.volume, w.sentiment, w.trend
+                        w.z_score, w.volume, w.sentiment, w.funding_rate, w.trend
                     );
                     return w;
                 }
@@ -145,6 +154,9 @@ impl SignalWeights {
         if contrib.sentiment_present {
             nudge(&mut self.sentiment, contrib.sentiment_bullish, was_long, profitable);
         }
+        if contrib.funding_present {
+            nudge(&mut self.funding_rate, contrib.funding_bullish, was_long, profitable);
+        }
 
         self.clamp_and_normalise();
         self.save();
@@ -159,24 +171,26 @@ impl SignalWeights {
             *w = w.max(0.04).min(0.50);
         }
         // Optional signals: can go to 0 (no data = no contribution) or ceiling 0.40
-        self.z_score   = self.z_score.max(0.0).min(0.40);
-        self.volume    = self.volume.max(0.0).min(0.40);
-        self.sentiment = self.sentiment.max(0.0).min(0.40);
+        self.z_score      = self.z_score.max(0.0).min(0.40);
+        self.volume       = self.volume.max(0.0).min(0.40);
+        self.sentiment    = self.sentiment.max(0.0).min(0.40);
+        self.funding_rate = self.funding_rate.max(0.0).min(0.40);
 
         let total = self.rsi + self.bollinger + self.macd + self.ema_cross
                   + self.order_flow + self.trend + self.z_score
-                  + self.volume + self.sentiment;
+                  + self.volume + self.sentiment + self.funding_rate;
 
         if total > 0.0 {
-            self.rsi        /= total;
-            self.bollinger  /= total;
-            self.macd       /= total;
-            self.ema_cross  /= total;
-            self.order_flow /= total;
-            self.trend      /= total;
-            self.z_score    /= total;
-            self.volume     /= total;
-            self.sentiment  /= total;
+            self.rsi          /= total;
+            self.bollinger    /= total;
+            self.macd         /= total;
+            self.ema_cross    /= total;
+            self.order_flow   /= total;
+            self.trend        /= total;
+            self.z_score      /= total;
+            self.volume       /= total;
+            self.sentiment    /= total;
+            self.funding_rate /= total;
         }
     }
 }
@@ -207,6 +221,11 @@ pub struct SignalContribution {
     pub sentiment_present:  bool,
     #[serde(default)]
     pub sentiment_bullish:  bool,
+    // ── Funding rate (Binance USDT-M perps) ──────────────────────────────────
+    #[serde(default)]
+    pub funding_present:    bool,
+    #[serde(default)]
+    pub funding_bullish:    bool,
 }
 
 // ─────────────────────────── Shared types ────────────────────────────────────

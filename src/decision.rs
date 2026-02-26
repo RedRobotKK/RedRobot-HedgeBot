@@ -45,6 +45,7 @@ use crate::indicators::TechnicalIndicators;
 use crate::signals::OrderFlowSignal;
 use crate::learner::{SignalWeights, SignalContribution};
 use crate::sentiment::SentimentData;
+use crate::funding::FundingData;
 use crate::candlestick_patterns;
 use crate::chart_patterns;
 
@@ -207,6 +208,7 @@ pub fn make_decision(
     of:        &OrderFlowSignal,
     weights:   &SignalWeights,
     sentiment: Option<&SentimentData>,
+    funding:   Option<&FundingData>,
     btc_ctx:   Option<&BtcMarketContext>,
 ) -> Result<Decision> {
     let last  = candles.last().ok_or_else(|| anyhow::anyhow!("Empty candle slice"))?;
@@ -524,7 +526,42 @@ pub fn make_decision(
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    //  11. Candlestick Patterns  (single / double / triple bar)
+    //  11. Perpetual Funding Rate  (Binance USDT-M — contrarian signal)
+    // ═════════════════════════════════════════════════════════════════════════
+    // Funding rate is settled every 8 h between longs and shorts.
+    // High POSITIVE funding → longs overcrowded and paying to stay open →
+    //   vulnerable to rapid unwind; BEARISH lean (contrarian).
+    // High NEGATIVE funding → shorts overcrowded → squeeze risk; BULLISH lean.
+    //
+    // The signal is CONTRARIAN: the weight adds to bear when bulls are crowded
+    // and adds to bull when bears are crowded.  signal_strength() returns
+    // +1.0 (strong bull) … -1.0 (strong bear) based on rate magnitude.
+    //
+    // Weight is scaled down in TRENDING regimes because strong momentum can
+    // sustain elevated funding for many bars (e.g. a parabolic rally).
+    if let Some(fund) = funding {
+        let strength = fund.signal_strength();
+        if strength.abs() > 0.0 {
+            contrib.funding_present = true;
+            let fund_w = match regime {
+                Regime::Trending => weights.funding_rate * 0.60,  // trends sustain high funding
+                Regime::Ranging  => weights.funding_rate * 1.20,  // crowded positions revert faster
+                Regime::Neutral  => weights.funding_rate,
+            };
+            if strength > 0.0 {
+                // Shorts crowded → squeeze potential → bullish
+                bull += fund_w * strength;
+                contrib.funding_bullish = true;
+            } else {
+                // Longs crowded → liquidation risk → bearish
+                bear += fund_w * (-strength);
+                contrib.funding_bullish = false;
+            }
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    //  12. Candlestick Patterns  (single / double / triple bar)
     // ═════════════════════════════════════════════════════════════════════════
     // Run on the last 3 bars at most.  Contribution capped at ±0.12 so
     // patterns confirm rather than override the regime-based scoring.
@@ -533,7 +570,7 @@ pub fn make_decision(
     bear += csp.bear_boost;
 
     // ═════════════════════════════════════════════════════════════════════════
-    //  12. Chart Patterns  (structural patterns over 10–60 bars)
+    //  13. Chart Patterns  (structural patterns over 10–60 bars)
     // ═════════════════════════════════════════════════════════════════════════
     // Includes: double/triple tops & bottoms, H&S, wedges, triangles,
     // flags, pennants, rectangles, cup & handle, and institutional PA patterns
@@ -603,6 +640,12 @@ pub fn make_decision(
         .map(|n| format!(" 📐{}", n))
         .unwrap_or_default();
 
+    // Funding rate tag — only shown when rate is outside neutral band
+    let fund_tag = funding
+        .filter(|f| f.is_significant())
+        .map(|f| format!(" 💰FR:{:+.3}%({})", f.funding_rate * 100.0, f.emoji()))
+        .unwrap_or_default();
+
     // BTC dominance context tag — shown in rationale when context is active
     let btc_tag = btc_ctx.map(|b| {
         let adj_str = if btc_adj > 0.0 {
@@ -619,7 +662,7 @@ pub fn make_decision(
     }).unwrap_or_default();
 
     let rationale = format!(
-        "[{}] RSI:{:.0} Z:{:.1} EMA:{:+.2}% MACD-H:{:.5} VOL:{:.1}× ADX:{:.0} VWAP:{:+.1}%{}{}{}{}",
+        "[{}] RSI:{:.0} Z:{:.1} EMA:{:+.2}% MACD-H:{:.5} VOL:{:.1}× ADX:{:.0} VWAP:{:+.1}%{}{}{}{}{}",
         regime.label(),
         ind.rsi,
         ind.z_score,
@@ -629,6 +672,7 @@ pub fn make_decision(
         ind.adx,
         ind.vwap_pct,
         sent_tag,
+        fund_tag,
         btc_tag,
         csp_tag,
         chp_tag,
