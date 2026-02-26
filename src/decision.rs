@@ -477,12 +477,32 @@ pub fn make_decision(
     // ═════════════════════════════════════════════════════════════════════════
     //  9. Volume conviction multiplier
     // ═════════════════════════════════════════════════════════════════════════
-    // High volume amplifies the prevailing signal (more conviction = higher weight).
-    // Low volume dampens signals (noise may dominate).
-    // VWAP bias is also incorporated here.
+    // Two distinct roles:
+    //
+    //  a) GLOBAL MULTIPLIER — applied first to all preceding signals.
+    //     High volume → all signals more reliable → amplify everything.
+    //     Low volume  → noise dominates            → dampen everything.
+    //
+    //  b) DIRECTIONAL SIGNAL — added second, after the multiplier.
+    //     High volume confirming current direction = additional bullish/bearish
+    //     evidence (volume is a primary signal, not just an amplifier).
+    //
+    // ORDER MATTERS: multiplier is applied first so the directional volume
+    // score is NOT self-amplified (fixes double-counting bug).
     let vol_ratio = ind.volume_ratio;
 
-    // Volume score: how much does volume confirm the current direction?
+    // Step a: apply global multiplier to all signals computed so far
+    let vol_mult = if vol_ratio > 2.0      { 1.20 }
+                   else if vol_ratio > 1.4 { 1.10 }
+                   else if vol_ratio < 0.6 { 0.85 }   // thin volume = weak conviction
+                   else if vol_ratio < 0.4 { 0.75 }
+                   else                    { 1.00 };
+
+    bull *= vol_mult;
+    bear *= vol_mult;
+
+    // Step b: directional volume score (VWAP bias as tie-breaker)
+    // Added AFTER the multiplier so volume doesn't amplify its own signal.
     let bull_vol_conf = vol_ratio > 1.3 && (vwap_bull || bull > bear);
     let bear_vol_conf = vol_ratio > 1.3 && (vwap_bear || bear > bull);
 
@@ -495,16 +515,6 @@ pub fn make_decision(
         contrib.volume_present = true;
         contrib.volume_bullish = false;
     }
-    // After individual scores, apply volume as a global multiplier
-    // High volume = amplify existing signal; Low volume = dampen
-    let vol_mult = if vol_ratio > 2.0      { 1.20 }
-                   else if vol_ratio > 1.4 { 1.10 }
-                   else if vol_ratio < 0.6 { 0.85 }   // thin volume = weak conviction
-                   else if vol_ratio < 0.4 { 0.75 }
-                   else                    { 1.00 };
-
-    bull *= vol_mult;
-    bear *= vol_mult;
 
     // ═════════════════════════════════════════════════════════════════════════
     //  10. LunarCrush Sentiment

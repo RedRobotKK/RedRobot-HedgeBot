@@ -637,9 +637,10 @@ fn position_size_pct(confidence: f64, metrics: &PerformanceMetrics) -> f64 {
     let kelly       = metrics.kelly_fraction();
 
     let base = if kelly > 0.0 {
-        // Scale Kelly by confidence: 0.65 conf → 60% of Kelly, 1.0 → 100%
-        let conf_scale = 0.6 + (confidence - 0.65).max(0.0) / 0.35 * 0.4;
-        kelly * conf_scale.min(1.0)
+        // Linear scale: conf=0.65 → 60% of Kelly, conf=1.0 → 100% of Kelly.
+        // (1.0 - 0.6) / (1.0 - 0.65) = 0.4 / 0.35 ≈ 1.143 — the slope.
+        let conf_scale = (0.6 + (confidence - 0.65).max(0.0) * (0.4 / 0.35)).min(1.0);
+        kelly * conf_scale
     } else {
         // Pre-Kelly fallback tiers (first ~5 trades)
         match confidence {
@@ -743,7 +744,7 @@ async fn execute_paper_trade(
     let mut s     = bot_state.write().await;
     let metrics   = s.metrics.clone();
     let pct       = position_size_pct(dec.confidence, &metrics);
-    let size_usd  = s.capital * pct;
+    let mut size_usd  = s.capital * pct;
     let equity    = s.capital + s.positions.iter().map(|p| p.size_usd + p.unrealised_pnl).sum::<f64>();
 
     // Guard: max 4 concurrent positions (reduced from 8 — quality over quantity)
@@ -762,14 +763,21 @@ async fn execute_paper_trade(
         info!("⚠ {} skipped — insufficient capital (${:.2})", symbol, s.capital);
         return;
     }
-    // Guard: per-trade heat ≤ 2% of equity
+    // Guard: per-trade heat ≤ 2% of equity.
+    // If the default Kelly/confidence size would exceed the heat limit, scale it
+    // down to the maximum allowed size rather than skipping the trade entirely.
+    let stop_dist_pct = (dec.entry_price - dec.stop_loss).abs() / dec.entry_price.max(1e-8);
     let t_heat = trade_heat(dec.entry_price, dec.stop_loss, size_usd, equity);
     if t_heat > 0.02 {
-        // Reduce size to stay within 2% heat
-        let allowed = 0.02 * equity / ((dec.entry_price - dec.stop_loss).abs() / dec.entry_price.max(1e-8));
-        if allowed < 2.0 { return; }
-        // fall through with reduced size
-        let _ = t_heat; // will use allowed below
+        // Max size that keeps R-risk at exactly 2% of equity
+        let allowed = 0.02 * equity / stop_dist_pct;
+        if allowed < 2.0 {
+            info!("⚠ {} skipped — stop too tight, min heat size ${:.2} < $2", symbol, allowed);
+            return;
+        }
+        info!("🌡 {} heat-scaled: ${:.2} → ${:.2} (stop_dist={:.2}%)",
+              symbol, size_usd, allowed, stop_dist_pct * 100.0);
+        size_usd = allowed;  // apply the reduction — enforce the heat limit
     }
     // Guard: total portfolio heat ≤ 8%
     let p_heat = portfolio_heat(&s.positions, equity);

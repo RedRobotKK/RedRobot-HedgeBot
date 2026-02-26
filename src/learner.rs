@@ -105,7 +105,7 @@ impl SignalWeights {
                 Err(e) => log::warn!("signal_weights.json parse error: {} — using defaults", e),
             }
         }
-        log::info!("📚 Using default signal weights (9 signals)");
+        log::info!("📚 Using default signal weights (10 signals)");
         Self::default()
     }
 
