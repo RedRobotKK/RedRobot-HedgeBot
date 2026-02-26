@@ -51,6 +51,8 @@ mod chart_patterns;
 mod ai_reviewer;
 mod coins;
 mod funding;
+mod trade_log;
+mod daily_analyst;
 
 use anyhow::Result;
 use log::{error, info, warn};
@@ -64,12 +66,41 @@ use learner::{SharedWeights, SignalWeights};
 use metrics::PerformanceMetrics;
 use sentiment::{SentimentCache, SharedSentiment};
 use funding::{FundingCache, SharedFunding};
+use trade_log::{SharedTradeLogger, TradeEvent, TradeLogger, ts_now, date_today};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::Builder::from_default_env()
         .format_timestamp_millis()
         .init();
+
+    // ── CLI: --analyze [YYYY-MM-DD] ──────────────────────────────────────
+    // Analyse a specific day's log and print the markdown report, then exit.
+    // Usage:  cargo run -- --analyze             (yesterday)
+    //         cargo run -- --analyze 2026-02-27  (specific date)
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(pos) = args.iter().position(|a| a == "--analyze") {
+        // Load the API key from the environment (don't need full config for analysis)
+        let api_key_owned = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
+        let api_key = api_key_owned.as_str();
+        if api_key.is_empty() {
+            eprintln!("❌ ANTHROPIC_API_KEY not set — cannot run analysis");
+            std::process::exit(1);
+        }
+        // Date argument is optional; default = yesterday
+        let date = args.get(pos + 1)
+            .filter(|d| d.len() == 10 && d.chars().nth(4) == Some('-'))
+            .cloned()
+            .unwrap_or_else(trade_log::date_yesterday);
+
+        let log_path = std::path::PathBuf::from(format!("logs/trading_{}.jsonl", date));
+        let out_path = std::path::PathBuf::from(format!("logs/analysis_{}.md", date));
+        match daily_analyst::analyse_log_file(&log_path, &out_path, api_key).await {
+            Ok(p)  => { println!("✅ Analysis written to {}", p.display()); }
+            Err(e) => { eprintln!("❌ Analysis failed: {}", e); std::process::exit(1); }
+        }
+        return Ok(());
+    }
 
     info!("🤖 RedRobot HedgeBot Starting — Professional Quant Mode");
 
@@ -79,6 +110,11 @@ async fn main() -> Result<()> {
     let db     = Arc::new(db::Database::new(&config.database_url).await?);
     let market = Arc::new(data::MarketClient::new());
     let hl     = Arc::new(exchange::HyperliquidClient::new(&config)?);
+
+    // Daily structured JSONL log (LLM-ingestible, rotates at midnight UTC)
+    let trade_logger: SharedTradeLogger = TradeLogger::shared("logs")
+        .map_err(|e| anyhow::anyhow!("Failed to create trade logger: {}", e))?;
+    info!("✓ Trade logger ready (logs/trading_{}.jsonl)", date_today());
 
     // LunarCrush sentiment client (pre-warm cache at startup)
     let sentiment_cache: SharedSentiment = SentimentCache::new(config.lunarcrush_api_key.clone());
@@ -129,15 +165,36 @@ async fn main() -> Result<()> {
     }
 
     let mut prev_mids: HashMap<String, f64> = HashMap::new();
+    // Track last analysis date to trigger exactly once per midnight
+    let mut last_analysis_date = date_today();
+    // Set start capital once at boot
+    { trade_logger.lock().await.day_stats.start_capital = config.initial_capital; }
+
     info!("🚀 Main loop started (30 s cycle, paper={})", config.paper_trading);
 
     loop {
         if !*running.read().await { break; }
 
+        // ── Midnight analysis trigger ─────────────────────────────────────
+        // Check once per cycle if the date has rolled over.  If so, run the
+        // daily analysis for yesterday's log in the background.
+        let today_now = date_today();
+        if today_now != last_analysis_date {
+            last_analysis_date = today_now.clone();
+            if let Some(api_key) = config.anthropic_api_key.clone() {
+                let logger_clone = trade_logger.clone();
+                tokio::spawn(async move {
+                    info!("🌙 Midnight — running daily analysis for yesterday…");
+                    daily_analyst::analyse_day(&logger_clone, &api_key).await;
+                });
+            }
+        }
+
         set_status(&bot_state, "📡 Fetching prices…").await;
 
         match run_cycle(&config, &market, &hl, &db, &bot_state, &weights,
-                        &sentiment_cache, &funding_cache, &mut prev_mids, &btc_dominance).await
+                        &sentiment_cache, &funding_cache, &mut prev_mids, &btc_dominance,
+                        &trade_logger).await
         {
             Ok(_) => {
                 set_status(&bot_state, "⏳ Waiting for next cycle (30s)…").await;
@@ -201,6 +258,7 @@ async fn run_cycle(
     fund_cache:      &SharedFunding,
     prev_mids:       &mut HashMap<String, f64>,
     btc_dominance:   &SharedBtcDominance,
+    trade_logger:    &SharedTradeLogger,
 ) -> Result<()> {
     { bot_state.write().await.cycle_count += 1; }
 
@@ -209,6 +267,23 @@ async fn run_cycle(
     let current_mids = market.fetch_all_mids().await
         .map_err(|e| { warn!("allMids: {}", e); e })?;
     info!("📊 {} prices", current_mids.len());
+
+    // Log cycle start (used by daily analyst for context)
+    {
+        let s = bot_state.read().await;
+        let equity = s.capital + s.positions.iter().map(|p| p.size_usd + p.unrealised_pnl).sum::<f64>();
+        trade_logger.lock().await.log(&TradeEvent::CycleStart {
+            ts:             ts_now(),
+            cycle_number:   s.cycle_count,
+            open_positions: s.positions.len(),
+            free_capital:   s.capital,
+            peak_equity:    s.peak_equity,
+            btc_dom_pct:    0.0, // updated later in the cycle
+            btc_ret_24h:    0.0,
+            btc_ret_4h:     0.0,
+            candidate_count: 0,
+        });
+    }
 
     // Save old prices BEFORE overwriting — needed for change_pct display
     let prev_snapshot = prev_mids.clone();
@@ -342,16 +417,16 @@ async fn run_cycle(
     // Execute partials first (they don't remove positions)
     for (sym, price) in to_partial1 {
         if to_close.iter().any(|(s, _, _)| s == &sym) { continue; }
-        take_partial(sym, price, 1, bot_state, weights).await;
+        take_partial(sym, price, 1, bot_state, weights, trade_logger).await;
     }
     for (sym, price) in to_partial2 {
         if to_close.iter().any(|(s, _, _)| s == &sym) { continue; }
-        take_partial(sym, price, 2, bot_state, weights).await;
+        take_partial(sym, price, 2, bot_state, weights, trade_logger).await;
     }
 
     // Execute full closes
     for (sym, price, reason) in to_close {
-        close_paper_position(&sym, price, &reason, bot_state, weights).await;
+        close_paper_position(&sym, price, &reason, bot_state, weights, trade_logger).await;
         info!("🚨 {} closed → {} @ ${:.4}", sym, reason, price);
     }
 
@@ -458,7 +533,7 @@ async fn run_cycle(
         set_status(bot_state,
             &format!("🔬 Analysing {}/{}: {}…", i + 1, total, sym)).await;
 
-        match analyse_symbol(sym, market, hl, db, config, bot_state, weights, sent_cache, fund_cache, btc_dom, btc_ret_24h, btc_ret_4h).await {
+        match analyse_symbol(sym, market, hl, db, config, bot_state, weights, sent_cache, fund_cache, btc_dom, btc_ret_24h, btc_ret_4h, trade_logger).await {
             Ok(Some(dec)) if dec.action != "SKIP" => {
                 info!("💡 {} → {} conf={:.0}%", sym, dec.action, dec.confidence * 100.0);
                 new_decisions.push(DecisionInfo {
@@ -485,11 +560,32 @@ async fn run_cycle(
 
     { let mut s = bot_state.write().await; s.last_update = now_str(); }
 
-    // ── AI position review (every 10 cycles ≈ 5 minutes) ─────────────────
+    // ── Metrics snapshot (every 10 cycles) ───────────────────────────────
     let (cycle_count, open_count) = {
         let s = bot_state.read().await;
         (s.cycle_count, s.positions.len())
     };
+    if cycle_count % 10 == 0 {
+        let s = bot_state.read().await;
+        let m = &s.metrics;
+        trade_logger.lock().await.log(&TradeEvent::MetricsSnapshot {
+            ts:               ts_now(),
+            cycle_number:     s.cycle_count,
+            total_trades:     s.closed_trades.len(),
+            win_rate:         m.win_rate,
+            expectancy_pct:   m.expectancy,
+            sharpe:           m.sharpe,
+            sortino:          m.sortino,
+            max_drawdown_pct: m.max_drawdown * 100.0,
+            profit_factor:    m.profit_factor,
+            kelly_fraction:   m.kelly_fraction(),
+            total_pnl_usd:    s.pnl,
+            capital:          s.capital,
+            open_positions:   s.positions.len(),
+        });
+    }
+
+    // ── AI position review (every 10 cycles ≈ 5 minutes) ─────────────────
     if cycle_count % 10 == 0 && open_count > 0 {
         if let Some(api_key) = &config.anthropic_api_key {
             set_status(bot_state, "🤖 Claude AI reviewing positions…").await;
@@ -500,7 +596,7 @@ async fn run_cycle(
             let review = ai_reviewer::review_positions(
                 &positions_snap, &metrics_snap, capital_snap, api_key,
             ).await;
-            apply_ai_review(&review, bot_state, weights, &current_mids).await;
+            apply_ai_review(&review, bot_state, weights, &current_mids, trade_logger).await;
         }
     }
 
@@ -512,10 +608,11 @@ async fn run_cycle(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async fn apply_ai_review(
-    review:      &ai_reviewer::AiReview,
-    bot_state:   &SharedState,
-    weights:     &SharedWeights,
+    review:       &ai_reviewer::AiReview,
+    bot_state:    &SharedState,
+    weights:      &SharedWeights,
     current_mids: &HashMap<String, f64>,
+    trade_logger: &SharedTradeLogger,
 ) {
     for rec in &review.recommendations {
         let cur_price = match current_mids.get(rec.symbol.as_str()) {
@@ -539,7 +636,7 @@ async fn apply_ai_review(
                 };
                 if should_close {
                     info!("🤖 AI close: {} — {}", rec.symbol, rec.reason);
-                    close_paper_position(&rec.symbol, cur_price, "AI-Close", bot_state, weights).await;
+                    close_paper_position(&rec.symbol, cur_price, "AI-Close", bot_state, weights, trade_logger).await;
                 } else {
                     info!("🤖 AI close {} REJECTED — position not sufficiently in loss (guardrail)", rec.symbol);
                 }
@@ -656,6 +753,7 @@ async fn analyse_symbol(
     btc_dom:      f64,   // BTC dominance %
     btc_ret_24h:  f64,   // BTC 24h return %
     btc_ret_4h:   f64,   // BTC 4h return % (for relative performance signal)
+    trade_logger: &SharedTradeLogger,
 ) -> Result<Option<decision::Decision>> {
     let candles = market.fetch_market_data(symbol).await?;
     if candles.len() < 26 { return Ok(None); }
@@ -703,8 +801,51 @@ async fn analyse_symbol(
     log::debug!("{}: RSI={:.1} trend={:.2}% MACD={:.5} ATR={:.4} → {}",
         symbol, ind.rsi, ind.trend, ind.macd, ind.atr, dec.action);
 
+    // ── Log every decision (including SKIP) for daily analysis ───────────
+    let htf_ref = htf.as_ref();
+    let regime_str = if ind.adx > 27.0 { "Trending" }
+                     else if ind.adx >= 19.0 { "Neutral" }
+                     else { "Ranging" };
+    {
+        let skip_reason = if dec.action == "SKIP" {
+            Some(dec.rationale.chars().take(120).collect::<String>())
+        } else { None };
+        trade_logger.lock().await.log(&TradeEvent::Decision {
+            ts:             ts_now(),
+            symbol:         symbol.to_string(),
+            action:         dec.action.clone(),
+            confidence:     dec.confidence,
+            rationale:      dec.rationale.chars().take(200).collect(),
+            rsi:            ind.rsi,
+            rsi_4h:         htf_ref.map_or(50.0, |h| h.rsi_4h),
+            adx:            ind.adx,
+            regime:         regime_str.to_string(),
+            macd:           ind.macd,
+            macd_hist:      ind.macd_histogram,
+            z_score:        ind.z_score,
+            z_score_4h:     htf_ref.map_or(0.0, |h| h.z_score_4h),
+            ema_cross_pct:  ind.ema_cross_pct,
+            atr:            ind.atr,
+            atr_expansion:  ind.atr_expansion_ratio,
+            bb_width_pct:   ind.bb_width_pct,
+            volume_ratio:   ind.volume_ratio,
+            vwap_pct:       ind.vwap_pct,
+            sentiment_galaxy: sent.as_ref().map(|s| s.galaxy_score),
+            sentiment_bull:   sent.as_ref().map(|s| s.bullish_percent),
+            funding_rate:     fund.as_ref().map(|f| f.funding_rate),
+            funding_delta:    fund.as_ref().map(|f| f.funding_delta),
+            btc_dom_pct:    btc_dom,
+            asset_ret_4h:   asset_return_4h,
+            entry_price:    dec.entry_price,
+            stop_loss:      dec.stop_loss,
+            take_profit:    dec.take_profit,
+            leverage:       dec.leverage,
+            skip_reason,
+        });
+    }
+
     if config.paper_trading && dec.action != "SKIP" {
-        execute_paper_trade(symbol, &dec, &ind, bot_state, weights).await;
+        execute_paper_trade(symbol, &dec, &ind, bot_state, weights, trade_logger).await;
     } else if !config.paper_trading && dec.action != "SKIP" {
         let account = hl.get_account().await?;
         if risk::should_trade(&dec, &account)? {
@@ -796,11 +937,12 @@ fn portfolio_heat(positions: &[PaperPosition], equity: f64) -> f64 {
 /// Circuit breaker: if peak→current drawdown > `CB_DRAWDOWN_THRESHOLD` (8%),
 /// position size is multiplied by `CB_SIZE_MULT` (0.35).
 async fn execute_paper_trade(
-    symbol:    &str,
-    dec:       &decision::Decision,
-    ind:       &indicators::TechnicalIndicators,
-    bot_state: &SharedState,
-    weights:   &SharedWeights,
+    symbol:       &str,
+    dec:          &decision::Decision,
+    ind:          &indicators::TechnicalIndicators,
+    bot_state:    &SharedState,
+    weights:      &SharedWeights,
+    trade_logger: &SharedTradeLogger,
 ) {
     let target_side = if dec.action == "BUY" { "LONG" } else { "SHORT" };
 
@@ -846,7 +988,7 @@ async fn execute_paper_trade(
             drop(s);
             info!("🔄 {} signal reversal: {} at {:.2}R  conf={:.0}%",
                   symbol, pos_side, r_mult_snap, dec.confidence * 100.0);
-            close_paper_position(symbol, dec.entry_price, "SignalExit", bot_state, weights).await;
+            close_paper_position(symbol, dec.entry_price, "SignalExit", bot_state, weights, trade_logger).await;
         }
         // No existing: fall through to new entry
     }
@@ -880,6 +1022,15 @@ async fn execute_paper_trade(
     if in_cb {
         info!("🔴 CB ACTIVE — drawdown {:.1}% (>{:.0}%), sizing ×{:.2}",
               drawdown * 100.0, CB_DRAWDOWN_THRESHOLD * 100.0, CB_SIZE_MULT);
+        trade_logger.lock().await.log(&TradeEvent::CircuitBreaker {
+            ts:             ts_now(),
+            activated:      true,
+            drawdown_pct:   drawdown * 100.0,
+            threshold_pct:  CB_DRAWDOWN_THRESHOLD * 100.0,
+            size_mult:      CB_SIZE_MULT,
+            peak_equity:    s.peak_equity,
+            current_equity: equity,
+        });
     }
 
     let pct          = position_size_pct(dec.confidence, &metrics, in_cb);
@@ -965,6 +1116,26 @@ async fn execute_paper_trade(
         target_side, symbol, dec.entry_price,
         size_usd, leverage, notional,
         r_risk, p_heat * 100.0, kelly_str);
+
+    // Log the trade entry
+    drop(s);
+    trade_logger.lock().await.log(&TradeEvent::TradeEntry {
+        ts:                 ts_now(),
+        symbol:             symbol.to_string(),
+        side:               target_side.to_string(),
+        entry_price:        dec.entry_price,
+        size_usd,
+        leverage,
+        notional_usd:       notional,
+        stop_loss:          dec.stop_loss,
+        take_profit:        dec.take_profit,
+        r_risk_usd:         r_risk,
+        confidence:         dec.confidence,
+        rationale:          dec.rationale.chars().take(200).collect(),
+        in_circuit_breaker: in_cb,
+        portfolio_heat_pct: p_heat * 100.0,
+        kelly_pct:          metrics.kelly_fraction() * 100.0,
+    });
 }
 
 /// Add 50% of original entry size to an existing winning position (pyramid).
@@ -1086,11 +1257,12 @@ async fn dca_position(
 /// Close one tranche (1/3 of remaining position) at R-multiple milestone.
 /// tranche=1 → 2R milestone, tranche=2 → 4R milestone.
 async fn take_partial(
-    symbol:     String,
-    exit_price: f64,
-    tranche:    u8,
-    bot_state:  &SharedState,
-    weights:    &SharedWeights,
+    symbol:       String,
+    exit_price:   f64,
+    tranche:      u8,
+    bot_state:    &SharedState,
+    weights:      &SharedWeights,
+    trade_logger: &SharedTradeLogger,
 ) {
     let mut s = bot_state.write().await;
     let idx = s.positions.iter().position(|p| p.symbol == symbol && p.tranches_closed < tranche);
@@ -1144,6 +1316,19 @@ async fn take_partial(
             if m.kelly_fraction() > 0.0 { m.kelly_fraction() * 100.0 } else { 0.0 },
             m.win_rate * 100.0);
 
+        // Log partial close
+        let r_at_partial = if close_size > 0.0 { trade_pnl / close_size } else { 0.0 };
+        trade_logger.lock().await.log(&TradeEvent::TradePartial {
+            ts:              ts_now(),
+            symbol:          symbol.clone(),
+            side:            if was_long { "LONG".to_string() } else { "SHORT".to_string() },
+            exit_price,
+            size_closed_usd: close_size,
+            pnl_usd:         trade_pnl,
+            r_milestone:     if tranche == 1 { 2 } else { 4 },
+            r_at_close:      r_at_partial,
+        });
+
         drop(s);
         let mut w = weights.write().await;
         w.update(&contrib, was_long, trade_pnl > 0.0);
@@ -1155,11 +1340,12 @@ async fn take_partial(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async fn close_paper_position(
-    symbol:     &str,
-    exit_price: f64,
-    reason:     &str,
-    bot_state:  &SharedState,
-    weights:    &SharedWeights,
+    symbol:       &str,
+    exit_price:   f64,
+    reason:       &str,
+    bot_state:    &SharedState,
+    weights:      &SharedWeights,
+    trade_logger: &SharedTradeLogger,
 ) {
     let mut s = bot_state.write().await;
 
@@ -1205,6 +1391,24 @@ async fn close_paper_position(
             m.sharpe, m.sortino, m.expectancy, m.profit_factor,
             if m.kelly_fraction() > 0.0 { m.kelly_fraction() * 100.0 } else { 0.0 },
             if m.in_circuit_breaker() { "ON" } else { "off" });
+
+        // ── Log the exit ──────────────────────────────────────────────────
+        trade_logger.lock().await.log(&TradeEvent::TradeExit {
+            ts:               ts_now(),
+            symbol:           symbol.to_string(),
+            side:             pos.side.clone(),
+            entry_price:      pos.entry_price,
+            exit_price,
+            size_usd:         pos.size_usd,
+            pnl_usd:          trade_pnl,
+            pnl_pct,
+            r_multiple:       r_at_close,
+            reason:           reason.to_string(),
+            cycles_held:      pos.cycles_held,
+            minutes_held:     pos.cycles_held / 2,
+            dca_count:        pos.dca_count,
+            tranches_closed:  pos.tranches_closed,
+        });
 
         // ── Online signal weight learning ─────────────────────────────────
         drop(s);

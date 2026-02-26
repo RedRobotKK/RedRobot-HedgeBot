@@ -27,18 +27,38 @@ use crate::metrics::PerformanceMetrics;
 
 // ─────────────────────────────── Claude API types ────────────────────────────
 
+/// Reusable Claude API request body.
+/// `pub` so `daily_analyst` can build requests with a different model/prompt.
 #[derive(Debug, Serialize)]
-struct ClaudeRequest {
-    model:      String,
-    max_tokens: u32,
-    system:     String,
-    messages:   Vec<ClaudeMessage>,
+pub struct ClaudeRequest {
+    pub model:      String,
+    pub max_tokens: u32,
+    pub system:     String,
+    pub messages:   Vec<ClaudeMessage>,
 }
 
 #[derive(Debug, Serialize)]
-struct ClaudeMessage {
-    role:    String,
-    content: String,
+pub struct ClaudeMessage {
+    pub role:    String,
+    pub content: String,
+}
+
+/// Convenience constructor — single user-turn request.
+pub fn build_claude_request(
+    model:      &str,
+    max_tokens: u32,
+    system:     &str,
+    user_msg:   &str,
+) -> ClaudeRequest {
+    ClaudeRequest {
+        model:      model.to_string(),
+        max_tokens,
+        system:     system.to_string(),
+        messages:   vec![ClaudeMessage {
+            role:    "user".to_string(),
+            content: user_msg.to_string(),
+        }],
+    }
 }
 
 #[derive(Debug, Deserialize)]
