@@ -36,7 +36,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-use crate::trade_log::{SharedTradeLogger, TradeEvent, TradeLogger, date_yesterday};
+use crate::trade_log::{SharedTradeLogger, TradeEvent, date_yesterday};
 
 // ─────────────────────────── Claude API plumbing ─────────────────────────────
 
@@ -233,7 +233,7 @@ fn compute_stats(events: &[TradeEvent], date: &str) -> DayStats {
             TradeEvent::TradeEntry { symbol, side, entry_price, confidence, ts,
                                      stop_loss, take_profit, leverage, size_usd,
                                      r_risk_usd, rationale, in_circuit_breaker,
-                                     portfolio_heat_pct, kelly_pct } => {
+                                     portfolio_heat_pct, kelly_pct, .. } => {
                 s.total_entries += 1;
                 let hour = parse_hour(ts);
                 if hour < 24 {

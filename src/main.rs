@@ -1404,8 +1404,8 @@ async fn close_paper_position(
             pnl_pct,
             r_multiple:       r_at_close,
             reason:           reason.to_string(),
-            cycles_held:      pos.cycles_held,
-            minutes_held:     pos.cycles_held / 2,
+            cycles_held:      pos.cycles_held as u32,
+            minutes_held:     (pos.cycles_held / 2) as u32,
             dca_count:        pos.dca_count,
             tranches_closed:  pos.tranches_closed,
         });

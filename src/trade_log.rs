@@ -35,7 +35,7 @@
 //! | `day_close`         | End-of-day summary (emitted at midnight UTC)         |
 
 use anyhow::Result;
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
