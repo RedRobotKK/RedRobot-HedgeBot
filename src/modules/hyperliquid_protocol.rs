@@ -25,6 +25,7 @@ use tracing::{error, info, warn};
 /// Hyperliquid API base URL
 const HYPERLIQUID_API_BASE: &str = "https://api.hyperliquid.com";
 /// Hyperliquid WebSocket endpoint
+#[allow(dead_code)]
 const HYPERLIQUID_WS_URI: &str = "wss://api.hyperliquid.com/ws";
 /// Default request timeout in seconds
 const REQUEST_TIMEOUT_SECS: u64 = 30;
@@ -56,12 +57,14 @@ pub struct HyperliquidClient {
     /// Rate limit tracking
     rate_limit_remaining: Arc<RwLock<u32>>,
     /// Last request timestamp
+    #[allow(dead_code)]
     last_request_time: Arc<RwLock<u64>>,
 }
 
 /// Order state tracking
 #[derive(Clone, Debug)]
-struct OrderState {
+#[allow(dead_code)]
+pub(crate) struct OrderState {
     pub order_id: String,
     pub symbol: String,
     pub side: OrderSide,
@@ -73,6 +76,7 @@ struct OrderState {
 
 /// Hyperliquid API request payload
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[allow(dead_code)]
 struct HyperliquidRequest {
     action: String,
     #[serde(flatten)]
@@ -182,7 +186,7 @@ impl HyperliquidClient {
     /// Rate limiting and retry logic
     async fn rate_limit_check(&self) -> Result<()> {
         let mut remaining = self.rate_limit_remaining.write().await;
-        if *remaining <= 0 {
+        if *remaining == 0 {
             warn!("Rate limit exhausted, waiting...");
             tokio::time::sleep(Duration::from_secs(1)).await;
             *remaining = 1000;
@@ -352,7 +356,7 @@ impl HyperliquidClient {
     pub async fn place_limit_order(&self, order: &LimitOrder) -> Result<HyperliquidOrderResponse> {
         info!(
             "Placing limit order: {} {} @ {}",
-            order.side.is_buy().then(|| "BUY").unwrap_or("SELL"),
+            if order.side.is_buy() { "BUY" } else { "SELL" },
             order.size,
             order.price
         );
@@ -417,7 +421,7 @@ impl HyperliquidClient {
     pub async fn place_market_order(&self, order: &MarketOrder) -> Result<HyperliquidOrderResponse> {
         info!(
             "Placing market order: {} {} with {}x leverage",
-            order.side.is_buy().then(|| "BUY").unwrap_or("SELL"),
+            if order.side.is_buy() { "BUY" } else { "SELL" },
             order.size,
             order.leverage
         );

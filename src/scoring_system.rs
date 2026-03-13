@@ -491,7 +491,7 @@ pub enum PortfolioAction {
 /// Calculate portfolio-level score from individual signals
 pub fn calculate_portfolio_score(
     strategy_scores: &[StrategyScore],
-    account_size: f64,
+    _account_size: f64,
 ) -> PortfolioScore {
     if strategy_scores.is_empty() {
         return PortfolioScore {

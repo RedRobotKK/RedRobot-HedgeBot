@@ -1,3 +1,13 @@
+// Suppress stylistic clippy lints that don't affect correctness
+#![allow(clippy::match_single_binding)]   // match with one arm → let (future refactor)
+#![allow(clippy::map_unwrap_or)]          // .map_or(false, |x|...) → .is_some_and()
+#![allow(clippy::len_zero)]              // len() == 0 → is_empty()
+#![allow(clippy::should_implement_trait)] // fn default() name conflicts with Default
+#![allow(clippy::new_without_default)]   // fn new() without Default impl
+#![allow(clippy::let_and_return)]        // returning result of let binding
+#![allow(clippy::manual_range_contains)] // x < a || x > b → !range.contains()
+#![allow(clippy::if_same_then_else)]     // identical if/else branches (intentional)
+
 /// Multi-protocol, multi-chain trading system for Drift, Hyperliquid, and more
 ///
 /// Features:

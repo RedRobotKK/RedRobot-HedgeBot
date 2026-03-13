@@ -259,6 +259,7 @@ impl Backtester {
     }
 
     /// Simulate a trade execution
+    #[allow(dead_code)]
     fn simulate_trade(
         &mut self,
         symbol: &str,
@@ -306,6 +307,7 @@ impl Backtester {
     }
 
     /// Calculate realized P&L for a closed trade
+    #[allow(dead_code)]
     fn finalize_trade(
         &mut self,
         trade_idx: usize,

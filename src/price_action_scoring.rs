@@ -48,7 +48,7 @@ impl PriceActionScorer {
 
         // Entry quality: How clean is the entry?
         // Measured by how tight the stop is relative to entry
-        let stop_distance = (pattern.stop_zone - pattern.entry_price).abs();
+        let _stop_distance = (pattern.stop_zone - pattern.entry_price).abs();
         let entry_quality = Self::calculate_entry_quality(&pattern);
 
         // RR quality: How good is the risk/reward?
@@ -139,7 +139,7 @@ impl PriceActionScorer {
     /// Generate detailed rationale
     fn generate_rationale(
         pattern: &PriceActionPattern,
-        score: f64,
+        _score: f64,
         entry_quality: f64,
         rr_quality: f64,
         confluence: f64,
@@ -246,7 +246,7 @@ impl PatternConfluence {
 
         // Determine primary direction
         let bullish_patterns = patterns.iter().filter(|p| Self::is_bullish(p)).count();
-        let bearish_patterns = patterns.len() - bullish_patterns;
+        let _bearish_patterns = patterns.len() - bullish_patterns;
 
         let direction_agreement = if patterns.len() > 0 {
             bullish_patterns as f64 / patterns.len() as f64

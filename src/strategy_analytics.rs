@@ -272,7 +272,7 @@ impl StrategyAnalytics {
     /// Analyze strategy performance in specific market regime
     pub fn analyze_regime_performance(
         strategy_name: &str,
-        metrics: &StrategyMetrics,
+        _metrics: &StrategyMetrics,
         regime: MarketRegime,
         regime_trades: &[AttributedTrade],
     ) -> MarketSpecificPerformance {

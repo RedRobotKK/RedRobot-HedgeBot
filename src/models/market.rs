@@ -198,7 +198,7 @@ pub struct AccountInfo {
 
 impl AccountInfo {
     pub fn can_trade(&self) -> bool {
-        self.margin_ratio > 0.0 && self.margin_ratio > 1.5
+        self.margin_ratio > 1.5
     }
 
     pub fn liquidation_risk(&self) -> f64 {

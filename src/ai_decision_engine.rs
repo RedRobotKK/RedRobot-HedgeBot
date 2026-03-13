@@ -265,7 +265,7 @@ impl AIDecisionEngine {
     /// Step 4: AI scoring and final decision
     fn score_and_decide(
         context: &AIDecisionContext,
-        technical_score: f64,
+        _technical_score: f64,
         framework_score: bool,
     ) -> (bool, f64, Vec<String>, Vec<String>, Vec<String>) {
         let mut reasoning = Vec::new();
@@ -379,7 +379,7 @@ impl AIDecisionEngine {
     }
 
     /// Create rejection decision
-    fn create_rejection(reason: String, warnings: Vec<String>, context: &AIDecisionContext) -> AIDecision {
+    fn create_rejection(reason: String, warnings: Vec<String>, _context: &AIDecisionContext) -> AIDecision {
         AIDecision {
             should_enter: false,
             direction: None,
