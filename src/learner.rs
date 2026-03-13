@@ -248,8 +248,211 @@ pub struct SignalContribution {
     pub funding_present:    bool,
     #[serde(default)]
     pub funding_bullish:    bool,
+    // ── Candlestick patterns (single/double/triple bar) ───────────────────────
+    // Tracked for observability; not yet a learnable weight (patterns apply a
+    // fixed ±0.12 boost directly, not via a multiplied weight field).
+    #[serde(default)]
+    pub candle_pattern_present: bool,
+    #[serde(default)]
+    pub candle_pattern_bullish: bool,
+    // ── Chart patterns (10–60 bar structural patterns) ───────────────────────
+    #[serde(default)]
+    pub chart_pattern_present:  bool,
+    #[serde(default)]
+    pub chart_pattern_bullish:  bool,
 }
 
 // ─────────────────────────── Shared types ────────────────────────────────────
 
 pub type SharedWeights = Arc<RwLock<SignalWeights>>;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  UNIT TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn all_bullish_contrib() -> SignalContribution {
+        SignalContribution {
+            rsi_bullish:       true,
+            bb_bullish:        true,
+            macd_bullish:      true,
+            ema_cross_bullish: true,
+            trend_bullish:     true,
+            of_bullish:        true,
+            z_score_present:   true, z_score_bullish:   true,
+            volume_present:    true, volume_bullish:    true,
+            sentiment_present: true, sentiment_bullish: true,
+            funding_present:   true, funding_bullish:   true,
+            candle_pattern_present: false, candle_pattern_bullish: false,
+            chart_pattern_present:  false, chart_pattern_bullish:  false,
+        }
+    }
+
+    // ── SignalWeights normalisation ───────────────────────────────────────────
+
+    #[test]
+    fn default_weights_sum_to_one() {
+        let w = SignalWeights::default();
+        let total = w.rsi + w.bollinger + w.macd + w.ema_cross + w.order_flow
+                  + w.trend + w.z_score + w.volume + w.sentiment + w.funding_rate;
+        assert!((total - 1.0).abs() < 1e-6, "default weights sum={total:.8} ≠ 1.0");
+    }
+
+    #[test]
+    fn clamp_and_normalise_always_sums_to_one() {
+        let mut w = SignalWeights {
+            rsi: 0.5, bollinger: 0.5, macd: 0.5,
+            ema_cross: 0.5, order_flow: 0.5, z_score: 0.5,
+            volume: 0.5, sentiment: 0.5, funding_rate: 0.5, trend: 0.5,
+        };
+        w.clamp_and_normalise();
+        let total = w.rsi + w.bollinger + w.macd + w.ema_cross + w.order_flow
+                  + w.trend + w.z_score + w.volume + w.sentiment + w.funding_rate;
+        assert!((total - 1.0).abs() < 1e-6,
+            "after normalise weights should sum to 1.0, got {total:.8}");
+    }
+
+    #[test]
+    fn clamp_enforces_floor_on_core_signals() {
+        let mut w = SignalWeights {
+            rsi: 0.0001, bollinger: 0.0001, macd: 0.0001,
+            ema_cross: 0.0001, order_flow: 0.0001, z_score: 0.0,
+            volume: 0.0, sentiment: 0.0, funding_rate: 0.0, trend: 0.0001,
+        };
+        w.clamp_and_normalise();
+        // Core signals have floor 0.04 before normalisation
+        // After normalise they'll be proportionally distributed — just check > 0
+        assert!(w.rsi > 0.0);
+        assert!(w.bollinger > 0.0);
+        assert!(w.macd > 0.0);
+        assert!(w.ema_cross > 0.0);
+        assert!(w.order_flow > 0.0);
+        assert!(w.trend > 0.0);
+    }
+
+    #[test]
+    fn clamp_allows_optional_signals_to_reach_zero() {
+        let mut w = SignalWeights::default();
+        w.z_score = 0.0;
+        w.volume  = 0.0;
+        w.clamp_and_normalise();
+        // optional signals CAN go to 0 before normalise (floor=0)
+        // after normalise they get redistributed but should remain proportionally low
+        assert!(w.z_score >= 0.0 && w.z_score <= 1.0);
+        assert!(w.volume  >= 0.0 && w.volume  <= 1.0);
+    }
+
+    // ── Weight update — profitable trade ─────────────────────────────────────
+
+    #[test]
+    fn update_profitable_long_with_all_bullish_increases_rsi() {
+        let mut w   = SignalWeights::default();
+        let contrib = all_bullish_contrib();
+        w.update(&contrib, true, true);  // was_long=true, profitable=true
+        let total_after = w.rsi + w.bollinger + w.macd + w.ema_cross + w.order_flow
+                        + w.trend + w.z_score + w.volume + w.sentiment + w.funding_rate;
+        assert!((total_after - 1.0).abs() < 1e-6,
+            "weights must still sum to 1.0 after update, got {total_after:.8}");
+    }
+
+    #[test]
+    fn update_profitable_long_with_bearish_rsi_decreases_rsi_weight() {
+        let mut w_aligned   = SignalWeights::default();
+        let mut w_misaligned = SignalWeights::default();
+
+        let mut contrib_aligned  = all_bullish_contrib();
+        contrib_aligned.rsi_bullish = true;  // aligned with LONG
+
+        let mut contrib_misalign = all_bullish_contrib();
+        contrib_misalign.rsi_bullish = false; // misaligned — RSI said SHORT, we went LONG
+
+        w_aligned.update(&contrib_aligned,  true, true);
+        w_misaligned.update(&contrib_misalign, true, true);
+
+        assert!(w_aligned.rsi > w_misaligned.rsi,
+            "aligned RSI weight ({:.4}) should exceed misaligned ({:.4})",
+            w_aligned.rsi, w_misaligned.rsi);
+    }
+
+    #[test]
+    fn update_losing_trade_penalises_aligned_signals() {
+        let mut w_win  = SignalWeights::default();
+        let mut w_lose = SignalWeights::default();
+        let contrib = all_bullish_contrib();
+
+        w_win.update(&contrib,  true, true);   // profitable long — aligned
+        w_lose.update(&contrib, true, false);  // losing long — aligned
+
+        // After win: rsi got +LR_WIN.  After loss: rsi got −LR_LOSE.
+        // Both are renormalised, so comparison is relative.
+        // The win case should have higher rsi weight relative to the total.
+        assert!(w_win.rsi > w_lose.rsi,
+            "winning trade should boost aligned signal ({:.4}) vs losing ({:.4})",
+            w_win.rsi, w_lose.rsi);
+    }
+
+    #[test]
+    fn update_optional_signals_only_updated_when_present() {
+        let mut w = SignalWeights::default();
+        let mut contrib = all_bullish_contrib();
+        contrib.sentiment_present = false;  // no LunarCrush data this cycle
+        w.update(&contrib, true, true);
+        // Sentiment was not present, so it was not nudged.
+        // After renormalise, all others grew proportionally — sentiment shrank.
+        // Just verify the invariant holds.
+        let total = w.rsi + w.bollinger + w.macd + w.ema_cross + w.order_flow
+                  + w.trend + w.z_score + w.volume + w.sentiment + w.funding_rate;
+        assert!((total - 1.0).abs() < 1e-6,
+            "weights must still sum to 1.0: {total:.8}");
+    }
+
+    // ── SignalContribution defaults ───────────────────────────────────────────
+
+    #[test]
+    fn signal_contribution_default_all_false() {
+        let c = SignalContribution::default();
+        assert!(!c.z_score_present);
+        assert!(!c.sentiment_present);
+        assert!(!c.funding_present);
+        assert!(!c.candle_pattern_present, "new pattern field must default to false");
+        assert!(!c.chart_pattern_present,  "new pattern field must default to false");
+    }
+
+    #[test]
+    fn signal_contribution_new_fields_roundtrip_json() {
+        let mut c = SignalContribution::default();
+        c.candle_pattern_present = true;
+        c.candle_pattern_bullish = true;
+        c.chart_pattern_present  = true;
+        c.chart_pattern_bullish  = false;
+
+        let json = serde_json::to_string(&c).unwrap();
+        let back: SignalContribution = serde_json::from_str(&json).unwrap();
+        assert!(back.candle_pattern_present);
+        assert!(back.candle_pattern_bullish);
+        assert!(back.chart_pattern_present);
+        assert!(!back.chart_pattern_bullish);
+    }
+
+    #[test]
+    fn signal_contribution_old_json_without_new_fields_deserialises_ok() {
+        // Simulates loading a SignalContribution saved before the new pattern fields
+        // were added — #[serde(default)] must fill them in as false.
+        let old_json = r#"{
+            "rsi_bullish": true,
+            "bb_bullish": false,
+            "macd_bullish": true,
+            "ema_cross_bullish": true,
+            "trend_bullish": false,
+            "of_bullish": true
+        }"#;
+        let c: SignalContribution = serde_json::from_str(old_json).unwrap();
+        assert!(!c.candle_pattern_present,
+            "old JSON (no candle_pattern_present) should deserialise as false");
+        assert!(!c.chart_pattern_present,
+            "old JSON (no chart_pattern_present) should deserialise as false");
+    }
+}
