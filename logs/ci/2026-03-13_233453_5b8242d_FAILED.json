@@ -1,0 +1,209 @@
+{
+  "schema_version": "1.0",
+  "meta": {
+    "run_at": "2026-03-13T23:34:16Z",
+    "commit": "5b8242d",
+    "commit_full": "5b8242d8ddf6fb6a3cbd87667b5423008a90ff6f",
+    "commit_message": "fix(clippy): fix E0689 float type errors + dead code warnings for CI Run #9",
+    "branch": "master",
+    "overall_status": "FAILED",
+    "triggered_by": "push"
+  },
+  "environment": {
+    "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
+    "cargo": "cargo 1.93.1 (083ac5135 2025-12-15)",
+    "os_kernel": "6.8.0-101-generic",
+    "arch": "x86_64",
+    "ram_total": "961Mi",
+    "swap_active": true
+  },
+  "steps": {
+    "tests": {
+      "status": "FAILED",
+      "exit_code": 101,
+      "duration_seconds": 20,
+      "total_passed": 0,
+      "total_failed": 0,
+      "total_ignored": 0,
+      "failures": []
+    },
+    "clippy": {
+      "status": "FAILED",
+      "exit_code": 101,
+      "duration_seconds": 15,
+      "error_count": 20,
+      "errors": [
+        {
+          "code": "E",
+          "message": "use of `or_insert_with` to construct default value",
+          "file": "src/modules/backtester.rs",
+          "line": 247,
+          "col": 18
+        },
+        {
+          "code": "E",
+          "message": "this method chain can be written more clearly with `if .. else ..`",
+          "file": "src/modules/backtester.rs",
+          "line": 275,
+          "col": 13
+        },
+        {
+          "code": "E",
+          "message": "match expression looks like `matches!` macro",
+          "file": "src/utils/error_handling.rs",
+          "line": 73,
+          "col": 9
+        },
+        {
+          "code": "E",
+          "message": "this `impl` can be derived",
+          "file": "src/strategies/institutional.rs",
+          "line": 29,
+          "col": 1
+        },
+        {
+          "code": "E",
+          "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+          "file": "src/strategies/mod.rs",
+          "line": 133,
+          "col": 50
+        },
+        {
+          "code": "E",
+          "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+          "file": "src/strategies/mod.rs",
+          "line": 136,
+          "col": 49
+        },
+        {
+          "code": "E",
+          "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+          "file": "src/strategies/mod.rs",
+          "line": 139,
+          "col": 46
+        },
+        {
+          "code": "E",
+          "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+          "file": "src/strategies/mod.rs",
+          "line": 142,
+          "col": 54
+        },
+        {
+          "code": "E",
+          "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+          "file": "src/strategies/mod.rs",
+          "line": 145,
+          "col": 44
+        },
+        {
+          "code": "E",
+          "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+          "file": "src/strategies/mod.rs",
+          "line": 148,
+          "col": 46
+        },
+        {
+          "code": "E",
+          "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+          "file": "src/strategies/mod.rs",
+          "line": 151,
+          "col": 50
+        },
+        {
+          "code": "E",
+          "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+          "file": "src/strategies/mod.rs",
+          "line": 154,
+          "col": 51
+        },
+        {
+          "code": "E",
+          "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+          "file": "src/strategies/mod.rs",
+          "line": 157,
+          "col": 61
+        },
+        {
+          "code": "E",
+          "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+          "file": "src/strategies/mod.rs",
+          "line": 162,
+          "col": 54
+        },
+        {
+          "code": "E",
+          "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+          "file": "src/strategies/mod.rs",
+          "line": 165,
+          "col": 60
+        },
+        {
+          "code": "E",
+          "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+          "file": "src/strategies/mod.rs",
+          "line": 168,
+          "col": 50
+        },
+        {
+          "code": "E",
+          "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+          "file": "src/strategies/mod.rs",
+          "line": 171,
+          "col": 51
+        },
+        {
+          "code": "E",
+          "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+          "file": "src/strategies/mod.rs",
+          "line": 174,
+          "col": 48
+        },
+        {
+          "code": "E",
+          "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+          "file": "src/strategies/mod.rs",
+          "line": 177,
+          "col": 48
+        },
+        {
+          "code": "E",
+          "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+          "file": "src/strategies/mod.rs",
+          "line": 180,
+          "col": 55
+        }
+      ]
+    },
+    "audit": {
+      "status": "PASSED",
+      "exit_code": 0,
+      "duration_seconds": 2,
+      "vulnerability_count": 2,
+      "vulnerabilities": [
+        {
+          "id": "RUSTSEC-2021-0141",
+          "url": "https://rustsec.org/advisories/RUSTSEC-2021-0141",
+          "crate": "rustls-pemfile",
+          "version": "1.0.4",
+          "title": "rustls-pemfile is unmaintained"
+        },
+        {
+          "id": "RUSTSEC-2025-0134",
+          "url": "https://rustsec.org/advisories/RUSTSEC-2025-0134",
+          "crate": "wasm-bindgen",
+          "version": "0.2.111"
+        }
+      ]
+    }
+  },
+  "service": {
+    "name": "hedgebot",
+    "status": "active",
+    "active_since": "Thu 2026-03-12 07:15:10 UTC",
+    "recent_logs": [
+      "Mar 12 07:15:10 ubuntu-s-1vcpu-1gb-sgp1-01 systemd[1]: Started hedgebot.service - RedRobot HedgeBot.",
+      "Mar 12 07:15:13 ubuntu-s-1vcpu-1gb-sgp1-01 redrobot-hedgebot[217810]: [2026-03-12T07:15:13.533Z ERROR redrobot_hedgebot] Dashboard: Address already in use (os error 98)"
+    ]
+  }
+}
