@@ -130,66 +130,66 @@ pub fn evaluate_all_strategies(ctx: &StrategyContext) -> Vec<StrategySignal> {
     let mut signals = vec![];
 
     // Run ORIGINAL 9 STRATEGIES
-    if let Ok(signal) = mean_reversion::evaluate(&ctx) {
+    if let Ok(signal) = mean_reversion::evaluate(ctx) {
         signals.push(signal);
     }
-    if let Ok(signal) = macd_momentum::evaluate(&ctx) {
+    if let Ok(signal) = macd_momentum::evaluate(ctx) {
         signals.push(signal);
     }
-    if let Ok(signal) = divergence::evaluate(&ctx) {
+    if let Ok(signal) = divergence::evaluate(ctx) {
         signals.push(signal);
     }
-    if let Ok(signal) = support_resistance::evaluate(&ctx) {
+    if let Ok(signal) = support_resistance::evaluate(ctx) {
         signals.push(signal);
     }
-    if let Ok(signal) = ichimoku::evaluate(&ctx) {
+    if let Ok(signal) = ichimoku::evaluate(ctx) {
         signals.push(signal);
     }
-    if let Ok(signal) = stochastic::evaluate(&ctx) {
+    if let Ok(signal) = stochastic::evaluate(ctx) {
         signals.push(signal);
     }
-    if let Ok(signal) = volume_profile::evaluate(&ctx) {
+    if let Ok(signal) = volume_profile::evaluate(ctx) {
         signals.push(signal);
     }
-    if let Ok(signal) = trend_following::evaluate(&ctx) {
+    if let Ok(signal) = trend_following::evaluate(ctx) {
         signals.push(signal);
     }
-    if let Ok(signal) = volatility_mean_reversion::evaluate(&ctx) {
+    if let Ok(signal) = volatility_mean_reversion::evaluate(ctx) {
         signals.push(signal);
     }
 
     // Run NEW 12 STRATEGIES
-    if let Ok(signal) = bollinger_breakout::evaluate(&ctx) {
+    if let Ok(signal) = bollinger_breakout::evaluate(ctx) {
         signals.push(signal);
     }
-    if let Ok(signal) = moving_average_crossover::evaluate(&ctx) {
+    if let Ok(signal) = moving_average_crossover::evaluate(ctx) {
         signals.push(signal);
     }
-    if let Ok(signal) = rsi_divergence::evaluate(&ctx) {
+    if let Ok(signal) = rsi_divergence::evaluate(ctx) {
         signals.push(signal);
     }
-    if let Ok(signal) = macd_divergence::evaluate(&ctx) {
+    if let Ok(signal) = macd_divergence::evaluate(ctx) {
         signals.push(signal);
     }
-    if let Ok(signal) = volume_surge::evaluate(&ctx) {
+    if let Ok(signal) = volume_surge::evaluate(ctx) {
         signals.push(signal);
     }
-    if let Ok(signal) = atr_breakout::evaluate(&ctx) {
+    if let Ok(signal) = atr_breakout::evaluate(ctx) {
         signals.push(signal);
     }
-    if let Ok(signal) = supply_demand_zones::evaluate(&ctx) {
+    if let Ok(signal) = supply_demand_zones::evaluate(ctx) {
         signals.push(signal);
     }
-    if let Ok(signal) = order_block::evaluate(&ctx) {
+    if let Ok(signal) = order_block::evaluate(ctx) {
         signals.push(signal);
     }
-    if let Ok(signal) = fair_value_gaps::evaluate(&ctx) {
+    if let Ok(signal) = fair_value_gaps::evaluate(ctx) {
         signals.push(signal);
     }
-    if let Ok(signal) = wyckoff_analysis::evaluate(&ctx) {
+    if let Ok(signal) = wyckoff_analysis::evaluate(ctx) {
         signals.push(signal);
     }
-    if let Ok(signal) = market_profile::evaluate(&ctx) {
+    if let Ok(signal) = market_profile::evaluate(ctx) {
         signals.push(signal);
     }
 

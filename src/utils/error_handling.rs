@@ -70,13 +70,13 @@ pub enum Error {
 impl Error {
     /// Check if error is recoverable
     pub fn is_recoverable(&self) -> bool {
-        match self {
-            Error::ApiRequestFailed(_) => true,
-            Error::TransferFailed => true,
-            Error::BridgeOperationFailed => true,
-            Error::GasEstimationFailed => true,
-            _ => false,
-        }
+        matches!(
+            self,
+            Error::ApiRequestFailed(_)
+                | Error::TransferFailed
+                | Error::BridgeOperationFailed
+                | Error::GasEstimationFailed
+        )
     }
 
     /// Get error severity (1-10, where 10 is most critical)

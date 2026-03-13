@@ -17,25 +17,13 @@ use serde::{Deserialize, Serialize};
 
 
 /// Configuration for all institutional strategies
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct InstitutionalConfig {
     pub funding_rate: FundingRateConfig,
     pub pairs_trading: PairsTradingConfig,
     pub order_flow: OrderFlowConfig,
     pub sentiment: SentimentConfig,
     pub volatility_surface: VolatilityConfig,
-}
-
-impl Default for InstitutionalConfig {
-    fn default() -> Self {
-        InstitutionalConfig {
-            funding_rate: FundingRateConfig::default(),
-            pairs_trading: PairsTradingConfig::default(),
-            order_flow: OrderFlowConfig::default(),
-            sentiment: SentimentConfig::default(),
-            volatility_surface: VolatilityConfig::default(),
-        }
-    }
 }
 
 // ============================================================================
