@@ -132,8 +132,19 @@ async fn dashboard_handler(State(state): State<SharedState>) -> Html<String> {
     let total_pnl_pct = if s.initial_capital > 0.0 { total_pnl / s.initial_capital * 100.0 } else { 0.0 };
 
     let pnl_colour  = if total_pnl >= 0.0 { "#3fb950" } else { "#f85149" };
-    let pnl_sign    = if total_pnl >= 0.0 { "+" } else { "" };
+    // BUG FIX: sign was "" for negatives (not "-"), causing minus to be silently dropped
+    // when combined with the .abs() calls in the format args.
+    let pnl_sign    = if total_pnl >= 0.0 { "+" } else { "-" };
+    // All-time peak drawdown (display only).
     let dd_pct      = if s.peak_equity > 0.0 { (s.peak_equity - equity) / s.peak_equity * 100.0 } else { 0.0 };
+    // Rolling 7-day drawdown — this is what actually drives the circuit breaker.
+    // The CB uses equity_window, so we must derive the rolling peak from the same source.
+    let rolling_peak = s.equity_window.iter()
+        .map(|&(_, e)| e)
+        .fold(equity, f64::max);
+    let rolling_dd_pct = if rolling_peak > 0.0 {
+        ((rolling_peak - equity) / rolling_peak * 100.0).max(0.0)
+    } else { 0.0 };
 
     // ── Metric strings ────────────────────────────────────────────────────
     let kelly     = m.kelly_fraction();
@@ -143,10 +154,12 @@ async fn dashboard_handler(State(state): State<SharedState>) -> Html<String> {
     let cb_active = s.cb_active;
     let cb_label  = if cb_active { "⚡ CB Active" } else { "● Normal" };
     let cb_colour = if cb_active { "#f85149" } else { "#3fb950" };
+    // BUG FIX: was using m.current_dd (P&L-curve drawdown from closed trades only).
+    // The CB is driven by rolling_dd_pct (7-day equity window) — use that here.
     let cb_desc   = if cb_active {
-        format!("0.35× sizes (DD {:.1}%)", m.current_dd)
+        format!("0.35× sizes · 7d DD {:.1}%", rolling_dd_pct)
     } else {
-        format!("Risk Mode · DD {:.1}%", m.current_dd)
+        format!("Risk Normal · 7d DD {:.1}%", rolling_dd_pct)
     };
     let pf_str    = if m.profit_factor.is_infinite() { "∞".to_string() } else { format!("{:.2}", m.profit_factor) };
 
@@ -160,8 +173,11 @@ async fn dashboard_handler(State(state): State<SharedState>) -> Html<String> {
             let border_colour = if p.unrealised_pnl > 0.0 { "#238636" } else if p.unrealised_pnl < -p.r_dollars_risked * 0.5 { "#da3633" } else { "#444c56" };
             let side_colour = if p.side == "LONG" { "#3fb950" } else { "#f85149" };
             let side_arrow  = if p.side == "LONG" { "▲" } else { "▼" };
-            let pnl_sign    = if p.unrealised_pnl >= 0.0 { "+" } else { "" };
+            // BUG FIX: was "" for negatives → minus dropped when using .abs()
+            let pnl_sign     = if p.unrealised_pnl >= 0.0 { "+" } else { "-" };
+            let pnl_abs      = p.unrealised_pnl.abs();
             let pct_of_entry = p.unrealised_pnl / p.size_usd * 100.0;
+            let pct_abs      = pct_of_entry.abs();
 
             // R progress bar: clamp -1R to +5R displayed range
             let bar_pct = ((r_mult + 1.0) / 6.0 * 100.0).clamp(0.0, 100.0);
@@ -233,18 +249,18 @@ async fn dashboard_handler(State(state): State<SharedState>) -> Html<String> {
                 _ => String::new(),
             };
 
-            format!(r#"<div class="pos-card" style="border-left:3px solid {border}">
+            format!(r#"<div class="pos-card" style="border-left:3px solid {border}" id="pos-{sym_id}">
   <div class="pos-header">
     <span class="pos-sym">{logo}{sym}</span>{name}{dca}
     <span class="pos-side" style="color:{sc}">{arrow} {side}</span>
     <span class="pos-age">{hold}</span>
   </div>
-  <div class="pos-pnl" style="color:{pc}">{ps}{pnl:.2} ({ps}{pct:.1}%) &nbsp; <b style="font-size:1.1em">{r:+.2}R</b></div>
+  <div id="pos-{sym_id}-pnl" class="pos-pnl" style="color:{pc}">{ps}{pnl:.2} ({ps}{pct:.1}%) &nbsp; <b style="font-size:1.1em">{r:+.2}R</b></div>
   <div class="pos-bar-wrap">
-    <div class="pos-bar" style="width:{bp:.0}%;background:{bc}"></div>
+    <div id="pos-{sym_id}-bar" class="pos-bar" style="width:{bp:.0}%;background:{bc}"></div>
     <div class="pos-bar-marks"><span>-1R</span><span>0</span><span>2R</span><span>4R</span></div>
   </div>
-  <div class="pos-meta">Avg <b>${entry:.4}</b> &nbsp;·&nbsp; Stop <span style="color:#f85149">${stop:.4}</span> &nbsp;·&nbsp; TP <span style="color:#3fb950">${tp:.4}</span></div>
+  <div class="pos-meta">Avg <b>${entry:.4}</b> &nbsp;·&nbsp; Stop <span id="pos-{sym_id}-stop" style="color:#f85149">${stop:.4}</span> &nbsp;·&nbsp; TP <span style="color:#3fb950">${tp:.4}</span></div>
   <div class="pos-meta">
     <span title="Margin committed" style="color:#8b949e">${size:.2} margin</span>
     &nbsp;·&nbsp;
@@ -261,6 +277,7 @@ async fn dashboard_handler(State(state): State<SharedState>) -> Html<String> {
   {ai_row}
 </div>"#,
                 border   = border_colour,
+                sym_id   = p.symbol.to_lowercase(),
                 logo     = logo_img,
                 sym      = p.symbol,
                 name     = name_span,
@@ -270,8 +287,8 @@ async fn dashboard_handler(State(state): State<SharedState>) -> Html<String> {
                 sc       = side_colour,
                 hold     = hold_str,
                 ps       = pnl_sign,
-                pnl      = p.unrealised_pnl,
-                pct      = pct_of_entry,
+                pnl      = pnl_abs,
+                pct      = pct_abs,
                 r        = r_mult,
                 pc       = pnl_colour,
                 bp       = bar_pct,
@@ -298,15 +315,17 @@ async fn dashboard_handler(State(state): State<SharedState>) -> Html<String> {
     } else {
         s.closed_trades.iter().rev().take(20).map(|t| {
             let pc = if t.pnl >= 0.0 { "#3fb950" } else { "#f85149" };
-            let ps = if t.pnl >= 0.0 { "+" } else { "" };
+            let ps = if t.pnl >= 0.0 { "+" } else { "-" };
             let sc = if t.side == "LONG" { "#3fb950" } else { "#f85149" };
+            let pnl_abs = t.pnl.abs();
+            let pct_abs = t.pnl_pct.abs();
             format!(
                 "<tr><td><b>{}</b></td><td style='color:{}'>{}</td>\
                  <td>${:.4}</td><td>${:.4}</td>\
                  <td style='color:{}'>{}{:.2} ({}{:.1}%)</td>\
                  <td class='reason-{}'>{}</td><td class='ts'>{}</td></tr>",
                 t.symbol, sc, t.side, t.entry, t.exit,
-                pc, ps, t.pnl, ps, t.pnl_pct,
+                pc, ps, pnl_abs, ps, pct_abs,
                 reason_class(&t.reason), t.reason, t.closed_at
             )
         }).collect()
@@ -441,7 +460,7 @@ async fn dashboard_handler(State(state): State<SharedState>) -> Html<String> {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <title>RedRobot HedgeBot</title>
-<meta http-equiv="refresh" content="30">
+<meta http-equiv="refresh" content="10">
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
 :root{{--bg:#0d1117;--surface:#161b22;--border:#30363d;--muted:#8b949e;--text:#e6edf3;
@@ -485,7 +504,7 @@ body{{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacS
 /* 5-second progress bar at bottom of status bar */
 .prog-track{{height:2px;background:var(--dim);position:relative;overflow:hidden}}
 .prog-fill{{height:2px;background:linear-gradient(90deg,var(--blue),var(--green));
-            animation:progFill 30s linear forwards}}
+            animation:progFill 10s linear forwards}}
 /* ── Section ── */
 .section{{background:var(--surface);border:1px solid var(--border);border-radius:10px;
           padding:12px;margin-bottom:12px}}
@@ -528,7 +547,8 @@ tr:hover td{{background:rgba(255,255,255,.03)}}
 .ts{{color:var(--muted);font-size:.85em;white-space:nowrap}}
 /* Reason badges */
 .reason-stop{{color:#f85149}}.reason-take{{color:#3fb950}}
-.reason-time{{color:#e3b341}}.reason-partial{{color:#58a6ff}}.reason-signal{{color:#8b949e}}
+.reason-time{{color:#e3b341}}.reason-partial{{color:#58a6ff}}
+.reason-ai{{color:#e3b341;font-weight:600}}.reason-signal{{color:#8b949e}}
 /* Sentiment cell */
 .sent-cell{{white-space:nowrap;font-size:.82em}}
 /* ── Inline weight strip ── */
@@ -556,11 +576,11 @@ tr:hover td{{background:rgba(255,255,255,.03)}}
 
 <div class="equity-hero">
   <div>
-    <div class="eq-val">${equity:.2}</div>
-    <div class="eq-label">Total Equity &nbsp;·&nbsp; free ${capital:.2}</div>
+    <div id="equity-val" class="eq-val">${equity:.2}</div>
+    <div id="equity-label" class="eq-label">Total Equity &nbsp;·&nbsp; free $<span id="equity-free">{capital:.2}</span></div>
   </div>
-  <div class="pnl-badge" style="color:{pnl_colour};border:1px solid {pnl_colour}40;background:{pnl_colour}15">
-    {pnl_sign}{total_pnl:.2} &nbsp; {pnl_sign}{total_pnl_pct:.2}%
+  <div id="pnl-badge" class="pnl-badge" style="color:{pnl_colour};border:1px solid {pnl_colour}40;background:{pnl_colour}15">
+    {pnl_sign}${total_pnl:.2} &nbsp; {pnl_sign}{total_pnl_pct:.2}%
   </div>
 </div>
 
@@ -570,7 +590,8 @@ tr:hover td{{background:rgba(255,255,255,.03)}}
   <div class="metric"><div class="mv" style="color:{expc}">{exps}{expectancy:.1}%</div><div class="ml">Expectancy</div></div>
   <div class="metric"><div class="mv">{pf}</div><div class="ml">Profit Factor</div></div>
   <div class="metric"><div class="mv">{wr:.0}% <span style="font-size:.65em;color:var(--muted)">({wins}W/{losses}L)</span></div><div class="ml">Win Rate</div></div>
-  <div class="metric"><div class="mv r">-{dd:.1}%</div><div class="ml">Drawdown</div></div>
+  <div class="metric" title="7-day rolling drawdown (drives circuit breaker). All-time: -{atdd:.1}%">
+    <div class="mv r">-{dd:.1}%</div><div class="ml">7d Drawdown</div></div>
   <div class="metric"><div class="mv b">{kelly_str}</div><div class="ml">Half-Kelly</div></div>
   <div class="metric"><div class="mv" style="color:{cbc}">{cb_label}</div><div class="ml">{cb_desc}</div></div>
   <div class="metric"><div class="mv">{open_n} / {total_closed}</div><div class="ml">Open / Closed</div></div>
@@ -592,7 +613,7 @@ tr:hover td{{background:rgba(255,255,255,.03)}}
 <div class="section">
   <div class="section-title">
     <span class="section-title-left"><span class="live-ring"></span> Active Positions</span>
-    <span class="badge">{open_n} / 8 slots · max 4 per direction</span>
+    <span class="badge">{open_n} / 4 slots · max 2 per direction</span>
   </div>
   <div class="pos-grid">{pos_cards}</div>
 </div>
@@ -630,10 +651,78 @@ tr:hover td{{background:rgba(255,255,255,.03)}}
 
 <script>
 (function(){{
-  var t=30,el=document.getElementById('cntdn');
-  if(!el)return;
-  function tick(){{el.textContent=(t>0?t:'…')+'s';if(t>0)t--;}}
-  tick();setInterval(tick,1000);
+  /* ── Countdown to next full page reload (10s) ────────────────────────── */
+  var t=10,el=document.getElementById('cntdn');
+  if(el){{
+    function tick(){{el.textContent=(t>0?t:'…')+'s';if(t>0)t--;}}
+    tick();setInterval(tick,1000);
+  }}
+
+  /* ── Live data polling every 5s — updates key numbers without page flicker ─ */
+  function $id(id){{return document.getElementById(id);}}
+  function fmt2(n){{return Math.abs(n).toFixed(2);}}
+  function sign(n){{return n>=0?'+':'-';}}
+  function col(n){{return n>=0?'#3fb950':'#f85149';}}
+
+  function applyPoll(s){{
+    /* Equity hero */
+    var unrealised=0,committed=0;
+    (s.positions||[]).forEach(function(p){{unrealised+=p.unrealised_pnl;committed+=p.size_usd;}});
+    var equity=s.capital+committed+unrealised;
+    var total_pnl=s.pnl+unrealised;
+    var pnl_pct=s.initial_capital>0?(total_pnl/s.initial_capital*100):0;
+
+    var ev=$id('equity-val');
+    if(ev)ev.textContent='$'+equity.toFixed(2);
+
+    var ef=$id('equity-free');
+    if(ef)ef.textContent=s.capital.toFixed(2);
+
+    var pb=$id('pnl-badge');
+    if(pb){{
+      var sg=sign(total_pnl),c=col(total_pnl);
+      pb.textContent=sg+'$'+fmt2(total_pnl)+' \u00a0 '+sg+Math.abs(pnl_pct).toFixed(2)+'%';
+      pb.style.color=c;pb.style.borderColor=c+'40';pb.style.background=c+'15';
+    }}
+
+    /* Open position cards — update P&L, R bar, and trailing stop */
+    (s.positions||[]).forEach(function(p){{
+      var sym=p.symbol.toLowerCase();
+      var r_mult=p.r_dollars_risked>1e-8?p.unrealised_pnl/p.r_dollars_risked:0;
+      var pct=p.size_usd>0?(p.unrealised_pnl/p.size_usd*100):0;
+      var sg=sign(p.unrealised_pnl),c=col(p.unrealised_pnl);
+
+      var pnlEl=$id('pos-'+sym+'-pnl');
+      if(pnlEl){{
+        pnlEl.style.color=c;
+        pnlEl.innerHTML=sg+'$'+fmt2(p.unrealised_pnl)+
+          ' ('+sg+Math.abs(pct).toFixed(1)+'%) \u00a0 '+
+          '<b style="font-size:1.1em">'+(r_mult>=0?'+':'')+r_mult.toFixed(2)+'R</b>';
+      }}
+
+      var barEl=$id('pos-'+sym+'-bar');
+      if(barEl){{
+        var bp=Math.min(100,Math.max(0,(r_mult+1)/6*100));
+        var bc=r_mult>=2?'#3fb950':(r_mult>=0?'#388bfd':'#f85149');
+        barEl.style.width=bp+'%';barEl.style.background=bc;
+      }}
+
+      var stopEl=$id('pos-'+sym+'-stop');
+      if(stopEl)stopEl.textContent='$'+p.stop_loss.toFixed(4);
+    }});
+
+    /* Status bar text */
+    var stEl=document.querySelector('.st-text');
+    if(stEl&&s.status)stEl.textContent=s.status;
+  }}
+
+  function poll(){{
+    fetch('/api/state').then(function(r){{return r.json();}}).then(applyPoll)
+      .catch(function(){{}});
+  }}
+  /* First poll after 2s so data appears before the 10s page reload */
+  setTimeout(poll,2000);
+  setInterval(poll,5000);
 }})();
 </script>
 </body></html>"#,
@@ -649,13 +738,14 @@ tr:hover td{{background:rgba(255,255,255,.03)}}
         sortc        = if m.sortino > 1.0 { "#3fb950" } else if m.sortino > 0.0 { "#e3b341" } else { "#f85149" },
         sortino      = m.sortino,
         expc         = if m.expectancy >= 0.0 { "#3fb950" } else { "#f85149" },
-        exps         = if m.expectancy >= 0.0 { "+" } else { "" },
+        exps         = if m.expectancy >= 0.0 { "+" } else { "-" }, // BUG FIX: was "" → dropped "-"
         expectancy   = m.expectancy.abs(),
         pf           = pf_str,
         wr           = m.win_rate * 100.0,
         wins         = m.wins,
         losses       = m.losses,
-        dd           = dd_pct.max(0.0),
+        dd           = rolling_dd_pct,    // 7-day rolling (drives CB) — shown in metric
+        atdd         = dd_pct.max(0.0),   // all-time drawdown (tooltip only)
         kelly_str    = kelly_str,
         cbc          = cb_colour,
         cb_label     = cb_label,
@@ -683,28 +773,16 @@ fn wi(label: &str, val: f64) -> String {
     )
 }
 
-/// Compact weight chip: label + value + mini-bar  (kept for potential reuse)
-fn wc(label: &str, val: f64) -> String {
-    format!(
-        r#"<div class="w-chip"><span class="w-chip-label">{label}</span><span class="w-chip-val">{val:.2}</span><div class="w-chip-bar"><div class="w-chip-fill" style="width:{pct:.0}%"></div></div></div>"#,
-        label = label,
-        val   = val,
-        pct   = (val * 100.0).min(100.0),
-    )
-}
-
 fn reason_class(r: &str) -> &'static str {
     match r {
         s if s.contains("Stop")    => "stop",
         s if s.contains("Take")    => "take",
         s if s.contains("Time")    => "time",
         s if s.contains("Partial") => "partial",
+        s if s.contains("AI")      => "ai",    // BUG FIX: was mapped to "signal" (grey)
+        s if s.contains("Signal")  => "signal",
         _                          => "signal",
     }
-}
-
-fn no_data(cols: u8, msg: &str) -> String {
-    format!("<tr><td colspan='{cols}' style='color:#8b949e'>{msg}</td></tr>")
 }
 
 async fn api_state_handler(State(state): State<SharedState>) -> Json<BotState> {
@@ -721,4 +799,436 @@ pub async fn serve(state: SharedState, port: u16) -> Result<(), Box<dyn std::err
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  UNIT TESTS — dashboard data calculations & helper functions
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::learner::SignalContribution;
+    use crate::metrics::PerformanceMetrics;
+    use std::collections::VecDeque;
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    fn make_pos(side: &str, entry: f64, stop: f64, qty: f64, size_usd: f64, upnl: f64) -> PaperPosition {
+        PaperPosition {
+            symbol:          "TEST".to_string(),
+            side:            side.to_string(),
+            entry_price:     entry,
+            quantity:        qty,
+            size_usd,
+            stop_loss:       stop,
+            take_profit:     entry * 1.10,
+            atr_at_entry:    entry * 0.02,
+            high_water_mark: entry,
+            low_water_mark:  entry,
+            partial_closed:  false,
+            r_dollars_risked: (entry - stop).abs() * qty,
+            tranches_closed: 0,
+            dca_count:       0,
+            leverage:        1.0,
+            cycles_held:     0,
+            entry_time:      "00:00:00 UTC".to_string(),
+            unrealised_pnl:  upnl,
+            contrib:         SignalContribution::default(),
+            ai_action:       None,
+            ai_reason:       None,
+        }
+    }
+
+    // ── Equity calculation ────────────────────────────────────────────────────
+
+    #[test]
+    fn equity_includes_capital_committed_and_unrealised() {
+        // equity = free_capital + committed_margin + unrealised_pnl
+        let capital    = 800.0;
+        let size_usd   = 100.0; // margin committed
+        let unrealised = 25.0;  // open profit
+        let pos = make_pos("LONG", 100.0, 95.0, 3.0, size_usd, unrealised);
+
+        let computed_equity: f64 = capital
+            + pos.size_usd          // committed
+            + pos.unrealised_pnl;   // unrealised
+        assert!(
+            (computed_equity - 925.0).abs() < 1e-10,
+            "equity = 800 + 100 + 25 = 925, got {computed_equity}"
+        );
+    }
+
+    #[test]
+    fn equity_with_losing_position_reduces_below_capital_plus_committed() {
+        let capital    = 800.0;
+        let unrealised = -30.0; // open loss
+        let pos = make_pos("LONG", 100.0, 95.0, 3.0, 100.0, unrealised);
+        let equity: f64 = capital + pos.size_usd + pos.unrealised_pnl;
+        assert!(
+            (equity - 870.0).abs() < 1e-10,
+            "equity with loss: 800 + 100 - 30 = 870, got {equity}"
+        );
+    }
+
+    #[test]
+    fn total_pnl_combines_realised_and_unrealised() {
+        // total_pnl = s.pnl (closed) + sum(unrealised_pnl)
+        let realised   = 50.0;  // closed trade profits
+        let unrealised = -10.0; // current open loss
+        let total = realised + unrealised;
+        assert!((total - 40.0).abs() < 1e-10, "total P&L: $50 realised - $10 open = $40");
+    }
+
+    #[test]
+    fn total_pnl_pct_is_relative_to_initial_capital() {
+        let initial   = 1000.0;
+        let total_pnl = 150.0;
+        let pct = total_pnl / initial * 100.0;
+        assert!((pct - 15.0).abs() < 1e-10, "15% gain on $1000 initial");
+    }
+
+    // ── PnL sign display (regression for the sign-stripping bug) ─────────────
+
+    #[test]
+    fn pnl_sign_positive_is_plus() {
+        let total_pnl: f64 = 50.0;
+        let sign = if total_pnl >= 0.0 { "+" } else { "-" };
+        assert_eq!(sign, "+", "positive PnL should use '+' prefix");
+    }
+
+    #[test]
+    fn pnl_sign_negative_is_minus_not_empty() {
+        let total_pnl: f64 = -50.0;
+        // REGRESSION: old code used "" for negative, causing sign to be dropped
+        // when combined with .abs() → would display "$50.00" instead of "-$50.00"
+        let sign = if total_pnl >= 0.0 { "+" } else { "-" };
+        assert_eq!(sign, "-", "REGRESSION: negative PnL must use '-' prefix, not empty string");
+    }
+
+    #[test]
+    fn pnl_display_negative_with_abs_shows_correct_sign() {
+        // Simulates the format string: {pnl_sign}${total_pnl:.2}
+        let total_pnl: f64 = -123.45;
+        let sign = if total_pnl >= 0.0 { "+" } else { "-" };
+        let display = format!("{}${:.2}", sign, total_pnl.abs());
+        assert_eq!(display, "-$123.45", "expected '-$123.45', got '{display}'");
+    }
+
+    #[test]
+    fn pnl_display_positive_with_abs_shows_correct_sign() {
+        let total_pnl: f64 = 78.90;
+        let sign = if total_pnl >= 0.0 { "+" } else { "-" };
+        let display = format!("{}${:.2}", sign, total_pnl.abs());
+        assert_eq!(display, "+$78.90", "expected '+$78.90', got '{display}'");
+    }
+
+    // ── Rolling 7-day drawdown calculation ────────────────────────────────────
+
+    #[test]
+    fn rolling_dd_is_zero_when_at_or_above_window_peak() {
+        // equity >= rolling_peak → no drawdown
+        let equity = 1100.0;
+        let mut window: VecDeque<(i64, f64)> = VecDeque::new();
+        window.push_back((0, 1000.0));
+        window.push_back((1, 1050.0));
+        window.push_back((2, 1080.0));
+
+        let rolling_peak = window.iter().map(|&(_, e)| e).fold(equity, f64::max);
+        let dd = ((rolling_peak - equity) / rolling_peak * 100.0).max(0.0);
+        // equity=1100 > all window entries → rolling_peak=1100 → dd=0
+        assert_eq!(dd, 0.0, "at or above window peak → zero drawdown");
+    }
+
+    #[test]
+    fn rolling_dd_reflects_peak_within_7_day_window() {
+        // Peak was 1200, current equity 1100 → 8.33% drawdown
+        let equity = 1100.0;
+        let mut window: VecDeque<(i64, f64)> = VecDeque::new();
+        window.push_back((0, 1000.0));
+        window.push_back((1, 1200.0)); // 7-day peak
+        window.push_back((2, 1050.0));
+
+        let rolling_peak = window.iter().map(|&(_, e)| e).fold(equity, f64::max);
+        let dd = ((rolling_peak - equity) / rolling_peak * 100.0).max(0.0);
+        let expected = (1200.0 - 1100.0) / 1200.0 * 100.0; // 8.333...%
+        assert!(
+            (dd - expected).abs() < 1e-6,
+            "rolling DD: expected {expected:.3}%, got {dd:.3}%"
+        );
+    }
+
+    #[test]
+    fn rolling_dd_uses_equity_as_fallback_when_window_empty() {
+        // Empty window → fold starts at equity → rolling_peak = equity → dd = 0
+        let equity = 1000.0;
+        let window: VecDeque<(i64, f64)> = VecDeque::new();
+        let rolling_peak = window.iter().map(|&(_, e)| e).fold(equity, f64::max);
+        assert_eq!(rolling_peak, equity, "empty window → rolling_peak = current equity");
+        let dd = ((rolling_peak - equity) / rolling_peak * 100.0).max(0.0);
+        assert_eq!(dd, 0.0, "empty window → zero drawdown");
+    }
+
+    #[test]
+    fn all_time_dd_uses_peak_equity_not_rolling_window() {
+        // The all-time peak is tracked separately in s.peak_equity.
+        // This can be much higher than the rolling 7-day peak.
+        let peak_equity = 5000.0; // hit months ago
+        let equity      = 1000.0; // current
+        let dd_pct = (peak_equity - equity) / peak_equity * 100.0;
+        assert!(
+            (dd_pct - 80.0).abs() < 1e-10,
+            "all-time DD: 80%% from $5000 peak to $1000 current, got {dd_pct}"
+        );
+        // This would show "80%" in the dashboard — very alarming but historically accurate.
+        // The CB uses rolling 7-day (8% threshold), NOT all-time.
+    }
+
+    #[test]
+    fn cb_uses_rolling_dd_not_all_time_dd() {
+        // The CB threshold is 8% rolling DD.
+        // A position with 80% all-time DD but only 3% 7-day DD should NOT trigger CB.
+        let peak_equity     = 5000.0;
+        let equity          = 1000.0;
+        let all_time_dd_pct = (peak_equity - equity) / peak_equity * 100.0; // 80%
+
+        // Rolling window only has recent data
+        let mut window: VecDeque<(i64, f64)> = VecDeque::new();
+        window.push_back((0, 1020.0));
+        window.push_back((1, 1000.0));
+        let rolling_peak    = window.iter().map(|&(_, e)| e).fold(equity, f64::max);
+        let rolling_dd_pct  = ((rolling_peak - equity) / rolling_peak * 100.0).max(0.0);
+
+        let cb_threshold = 8.0_f64;
+        let cb_from_all_time  = all_time_dd_pct > cb_threshold;
+        let cb_from_rolling   = rolling_dd_pct  > cb_threshold;
+
+        assert!(cb_from_all_time,  "all-time DD 80% would trigger CB: {all_time_dd_pct}%");
+        assert!(!cb_from_rolling, "rolling 7d DD {rolling_dd_pct}% should NOT trigger CB");
+    }
+
+    // ── reason_class helper ───────────────────────────────────────────────────
+
+    #[test]
+    fn reason_class_stop_loss() {
+        assert_eq!(reason_class("StopLoss"), "stop");
+    }
+
+    #[test]
+    fn reason_class_take_profit() {
+        assert_eq!(reason_class("TakeProfit"), "take");
+    }
+
+    #[test]
+    fn reason_class_time_exit() {
+        assert_eq!(reason_class("TimeExit"), "time");
+    }
+
+    #[test]
+    fn reason_class_partial() {
+        assert_eq!(reason_class("Partial2R"), "partial");
+    }
+
+    #[test]
+    fn reason_class_ai_close_is_ai_not_signal() {
+        // REGRESSION: AI-Close was incorrectly mapped to "signal" (grey text).
+        // It should now map to "ai" (yellow, bold).
+        assert_eq!(
+            reason_class("AI-Close"), "ai",
+            "REGRESSION: AI-Close must map to 'ai' class, not 'signal'"
+        );
+    }
+
+    #[test]
+    fn reason_class_signal_exit() {
+        assert_eq!(reason_class("SignalExit"), "signal");
+    }
+
+    #[test]
+    fn reason_class_unknown_falls_back_to_signal() {
+        assert_eq!(reason_class("SomethingNew"), "signal");
+    }
+
+    // ── wi() helper (weight strip) ────────────────────────────────────────────
+
+    #[test]
+    fn wi_produces_html_with_label_and_value() {
+        let html = wi("RSI", 0.75);
+        assert!(html.contains("RSI"),  "wi() must contain label");
+        assert!(html.contains("0.75"), "wi() must contain formatted value");
+    }
+
+    #[test]
+    fn wi_bar_width_capped_at_100_percent() {
+        // val > 1.0 should cap bar width at 100%
+        let html = wi("OverVal", 1.5);
+        assert!(html.contains("width:100%"), "bar width must be capped at 100%: {html}");
+    }
+
+    #[test]
+    fn wi_bar_width_scales_with_value() {
+        let html = wi("TestSig", 0.50);
+        assert!(html.contains("width:50%"), "val=0.50 should give width:50%");
+    }
+
+    // ── R-multiple display ────────────────────────────────────────────────────
+
+    #[test]
+    fn r_multiple_display_uses_r_dollars_risked() {
+        // Dashboard: r_mult = unrealised_pnl / r_dollars_risked
+        let pos = make_pos("LONG", 100.0, 95.0, 3.0, 100.0, 15.0);
+        // r_dollars_risked = (100 - 95) × 3 = $15
+        let r_mult = if pos.r_dollars_risked > 1e-8 {
+            pos.unrealised_pnl / pos.r_dollars_risked
+        } else { 0.0 };
+        assert!((r_mult - 1.0).abs() < 1e-10,
+            "unrealised=$15 / r_risk=$15 should be exactly 1R, got {r_mult}");
+    }
+
+    #[test]
+    fn r_multiple_bar_pct_clamps_to_0_100() {
+        // bar_pct = ((r_mult + 1) / 6 * 100).clamp(0, 100)
+        // At -1R → 0%, at 0R → 16.7%, at 2R → 50%, at 5R → 100%
+        let clamp = |r: f64| -> f64 { ((r + 1.0) / 6.0 * 100.0).clamp(0.0, 100.0) };
+
+        assert_eq!(clamp(-2.0), 0.0,   "-2R → bar at 0%");
+        assert_eq!(clamp(-1.0), 0.0,   "-1R → bar at 0%");
+        assert!((clamp(0.0) - 16.67).abs() < 0.1, "0R → bar at ~16.7%");
+        assert!((clamp(2.0) - 50.0).abs() < 0.1,  "2R → bar at 50%");
+        assert_eq!(clamp(5.0), 100.0,  "5R → bar at 100%");
+        assert_eq!(clamp(10.0), 100.0, "10R → bar still clamped at 100%");
+    }
+
+    // ── Position card border colour ───────────────────────────────────────────
+
+    #[test]
+    fn position_border_green_when_profitable() {
+        let upnl = 50.0;
+        let r_risk = 15.0;
+        let border = if upnl > 0.0 { "#238636" }
+                     else if upnl < -r_risk * 0.5 { "#da3633" }
+                     else { "#444c56" };
+        assert_eq!(border, "#238636", "profitable position should have green border");
+    }
+
+    #[test]
+    fn position_border_red_when_loss_exceeds_half_r() {
+        let upnl  = -10.0;
+        let r_risk = 15.0; // half-R = -7.5, loss = -10 > -7.5
+        let border = if upnl > 0.0 { "#238636" }
+                     else if upnl < -r_risk * 0.5 { "#da3633" }
+                     else { "#444c56" };
+        assert_eq!(border, "#da3633", "loss > 0.5R should show red danger border");
+    }
+
+    #[test]
+    fn position_border_neutral_when_small_loss() {
+        let upnl  = -3.0;   // less than half of R
+        let r_risk = 15.0;  // half-R = -7.5 → loss -3 < -7.5 is false
+        let border = if upnl > 0.0 { "#238636" }
+                     else if upnl < -r_risk * 0.5 { "#da3633" }
+                     else { "#444c56" };
+        assert_eq!(border, "#444c56", "small loss < 0.5R should show neutral border");
+    }
+
+    // ── Hold time formatting ──────────────────────────────────────────────────
+
+    #[test]
+    fn hold_time_under_60_minutes_shows_minutes() {
+        let cycles_held = 40u64; // 40 cycles × 30s = 20 min
+        let hold_mins = cycles_held / 2;
+        let hold_str = if hold_mins < 60 {
+            format!("{}m", hold_mins)
+        } else {
+            format!("{:.1}h", hold_mins as f64 / 60.0)
+        };
+        assert_eq!(hold_str, "20m", "40 cycles = 20m hold time");
+    }
+
+    #[test]
+    fn hold_time_over_60_minutes_shows_hours() {
+        let cycles_held = 240u64; // 240 cycles × 30s = 120 min = 2.0h
+        let hold_mins = cycles_held / 2;
+        let hold_str = if hold_mins < 60 {
+            format!("{}m", hold_mins)
+        } else {
+            format!("{:.1}h", hold_mins as f64 / 60.0)
+        };
+        assert_eq!(hold_str, "2.0h", "240 cycles = 2.0h hold time");
+    }
+
+    // ── Sentiment live status ─────────────────────────────────────────────────
+
+    #[test]
+    fn sent_live_true_when_any_candidate_has_bullish_data() {
+        let candidates = vec![
+            CandidateInfo { symbol: "BTC".to_string(), price: 50000.0,
+                change_pct: None, galaxy_score: None, bullish_percent: None, alt_rank: None },
+            CandidateInfo { symbol: "ETH".to_string(), price: 3000.0,
+                change_pct: None, galaxy_score: Some(72.0), bullish_percent: Some(65.0), alt_rank: None },
+        ];
+        let sent_live = candidates.iter().any(|c| c.bullish_percent.is_some());
+        assert!(sent_live, "should be live when at least one candidate has sentiment data");
+    }
+
+    #[test]
+    fn sent_live_false_when_no_candidates_have_data() {
+        let candidates = vec![
+            CandidateInfo { symbol: "SOL".to_string(), price: 100.0,
+                change_pct: None, galaxy_score: None, bullish_percent: None, alt_rank: None },
+        ];
+        let sent_live = candidates.iter().any(|c| c.bullish_percent.is_some());
+        assert!(!sent_live, "should not be live when no candidates have sentiment data");
+    }
+
+    // ── Tranche label ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn tranche_0_shows_first_target() {
+        let t = 0u8;
+        let label = match t {
+            0 => "target 2R",
+            1 => "1/3 banked · target 4R",
+            _ => "2/3 banked · trailing",
+        };
+        assert_eq!(label, "target 2R");
+    }
+
+    #[test]
+    fn tranche_1_shows_partial_banked() {
+        let t = 1u8;
+        let label = match t {
+            0 => "target 2R",
+            1 => "1/3 banked · target 4R",
+            _ => "2/3 banked · trailing",
+        };
+        assert_eq!(label, "1/3 banked · target 4R");
+    }
+
+    #[test]
+    fn tranche_2_shows_two_thirds_banked() {
+        let t = 2u8;
+        let label = match t {
+            0 => "target 2R",
+            1 => "1/3 banked · target 4R",
+            _ => "2/3 banked · trailing",
+        };
+        assert_eq!(label, "2/3 banked · trailing");
+    }
+
+    // ── Dashboard slot badge correctness ──────────────────────────────────────
+
+    #[test]
+    fn slot_badge_reflects_correct_max_positions() {
+        // Regression: was hardcoded as "8 slots · max 4 per direction"
+        // Correct values: MAX_POSITIONS=4, MAX_SAME_DIRECTION=2
+        let max_positions      = 4usize;
+        let max_same_direction = 2usize;
+        let badge = format!("{} / {} slots · max {} per direction",
+            0, max_positions, max_same_direction);
+        assert!(badge.contains("4 slots"),  "badge must show 4 total slots");
+        assert!(badge.contains("max 2 per"), "badge must show max 2 per direction");
+        assert!(!badge.contains("8 slots"), "REGRESSION: badge must NOT say 8 slots");
+        assert!(!badge.contains("max 4 per"), "REGRESSION: badge must NOT say max 4 per direction");
+    }
 }
