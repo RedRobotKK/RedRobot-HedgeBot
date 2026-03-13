@@ -274,3 +274,130 @@ impl MarketClient {
         }).await
     }
 }
+
+// =============================================================================
+//  Unit Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── hl_to_binance ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn hl_to_binance_standard_symbols() {
+        assert_eq!(hl_to_binance("BTC"),  Some("BTCUSDT".to_string()));
+        assert_eq!(hl_to_binance("ETH"),  Some("ETHUSDT".to_string()));
+        assert_eq!(hl_to_binance("SOL"),  Some("SOLUSDT".to_string()));
+        assert_eq!(hl_to_binance("AVAX"), Some("AVAXUSDT".to_string()));
+    }
+
+    #[test]
+    fn hl_to_binance_k_prefix_becomes_1000() {
+        // HL uses "k" prefix for coins that trade in 1000-unit lots on Binance
+        assert_eq!(hl_to_binance("kBONK"), Some("1000BONKUSDT".to_string()));
+        assert_eq!(hl_to_binance("kPEPE"), Some("1000PEPEUSDT".to_string()));
+        assert_eq!(hl_to_binance("kSHIB"), Some("1000SHIBUSDT".to_string()));
+    }
+
+    #[test]
+    fn hl_to_binance_at_symbols_rejected() {
+        // Price-level derivatives have no Binance listing
+        assert_eq!(hl_to_binance("@232"),  None);
+        assert_eq!(hl_to_binance("@7"),    None);
+        assert_eq!(hl_to_binance("@1000"), None);
+    }
+
+    #[test]
+    fn hl_to_binance_spot_pairs_rejected() {
+        // Spot pairs (HL-specific) have no Binance perp listing
+        assert_eq!(hl_to_binance("PURR/USDC"), None);
+        assert_eq!(hl_to_binance("BTC/USDC"),  None);
+    }
+
+    // ── filter_candidates ─────────────────────────────────────────────────────
+
+    fn make_mids(pairs: &[(&str, f64)]) -> HashMap<String, f64> {
+        pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+    }
+
+    #[test]
+    fn filter_candidates_always_includes_anchors() {
+        let current  = make_mids(&[("BTC", 50000.0), ("ETH", 3000.0), ("SOL", 100.0),
+                                    ("DOGE", 0.1), ("AVAX", 30.0)]);
+        let previous = make_mids(&[("BTC", 50000.0), ("ETH", 3000.0), ("SOL", 100.0),
+                                    ("DOGE", 0.1), ("AVAX", 30.0)]);
+        let market = MarketClient::new();
+        let result = market.filter_candidates(&current, &previous);
+        assert!(result.contains(&"BTC".to_string()), "BTC must always be a candidate");
+        assert!(result.contains(&"ETH".to_string()), "ETH must always be a candidate");
+        assert!(result.contains(&"SOL".to_string()), "SOL must always be a candidate");
+    }
+
+    #[test]
+    fn filter_candidates_caps_at_18() {
+        // Build 30 symbols all with different % moves
+        let current: HashMap<String, f64> = (0..30)
+            .map(|i| (format!("COIN{i}"), 100.0 + i as f64))
+            .chain([("BTC".to_string(), 50000.0), ("ETH".to_string(), 3000.0),
+                    ("SOL".to_string(), 100.0)])
+            .collect();
+        let previous: HashMap<String, f64> = (0..30)
+            .map(|i| (format!("COIN{i}"), 100.0))
+            .chain([("BTC".to_string(), 50000.0), ("ETH".to_string(), 3000.0),
+                    ("SOL".to_string(), 100.0)])
+            .collect();
+        let market = MarketClient::new();
+        let result = market.filter_candidates(&current, &previous);
+        assert!(result.len() <= 18, "Candidate list must be capped at 18, got {}", result.len());
+    }
+
+    #[test]
+    fn filter_candidates_top_movers_are_included() {
+        // MOON has 100% move — should be picked up over stable coins
+        let current  = make_mids(&[("BTC", 50000.0), ("ETH", 3000.0), ("SOL", 100.0),
+                                    ("MOON", 2.0), ("STABLE", 1.0)]);
+        let previous = make_mids(&[("BTC", 50000.0), ("ETH", 3000.0), ("SOL", 100.0),
+                                    ("MOON", 1.0), ("STABLE", 1.0)]);  // MOON +100%
+        let market = MarketClient::new();
+        let result = market.filter_candidates(&current, &previous);
+        assert!(result.contains(&"MOON".to_string()),
+            "Top mover MOON should be included");
+    }
+
+    #[test]
+    fn filter_candidates_rejects_at_symbols() {
+        // @-symbols are HL price-level derivatives — no Binance mapping, must be excluded
+        let current  = make_mids(&[("BTC", 50000.0), ("ETH", 3000.0), ("SOL", 100.0),
+                                    ("@232", 232.0), ("@7", 7.0)]);
+        let previous = make_mids(&[("BTC", 50000.0), ("ETH", 3000.0), ("SOL", 100.0),
+                                    ("@232", 100.0), ("@7", 1.0)]);  // big moves but invalid
+        let market = MarketClient::new();
+        let result = market.filter_candidates(&current, &previous);
+        assert!(!result.contains(&"@232".to_string()), "@232 must be filtered out");
+        assert!(!result.contains(&"@7".to_string()),   "@7 must be filtered out");
+    }
+
+    #[test]
+    fn filter_candidates_empty_previous_gives_zero_change() {
+        // Cycle 1: no previous prices, all anchors still returned
+        let current  = make_mids(&[("BTC", 50000.0), ("ETH", 3000.0), ("SOL", 100.0)]);
+        let previous: HashMap<String, f64> = HashMap::new();
+        let market = MarketClient::new();
+        let result = market.filter_candidates(&current, &previous);
+        // Anchors are always included regardless
+        assert!(result.contains(&"BTC".to_string()));
+    }
+
+    #[test]
+    fn filter_candidates_no_duplicates() {
+        // BTC is both an anchor and a top mover — should appear once
+        let current  = make_mids(&[("BTC", 60000.0), ("ETH", 3000.0), ("SOL", 100.0)]);
+        let previous = make_mids(&[("BTC", 50000.0), ("ETH", 3000.0), ("SOL", 100.0)]);
+        let market = MarketClient::new();
+        let result = market.filter_candidates(&current, &previous);
+        let btc_count = result.iter().filter(|s| s.as_str() == "BTC").count();
+        assert_eq!(btc_count, 1, "BTC must appear exactly once, got {}", btc_count);
+    }
+}
