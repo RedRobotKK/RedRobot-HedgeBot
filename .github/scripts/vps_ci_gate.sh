@@ -8,6 +8,11 @@ export PATH="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 source "$HOME/.cargo/env" 2>/dev/null || true
 swapon /swapfile 2>/dev/null || true
 
+# ── Pull latest code so CI tests what was just pushed ─────────────────────────
+git fetch origin master 2>&1
+git reset --hard origin/master 2>&1
+echo "VPS code now at: $(git rev-parse --short HEAD)"
+
 # ── Metadata ──────────────────────────────────────────────────────────────────
 COMMIT=$(git rev-parse --short HEAD)
 COMMIT_FULL=$(git rev-parse HEAD)
