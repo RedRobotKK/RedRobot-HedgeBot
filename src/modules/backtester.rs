@@ -176,7 +176,7 @@ pub struct BacktestResults {
 pub struct Backtester {
     config: BacktestConfig,
     data: HashMap<String, Vec<OHLCV>>,
-    trades: Vec<SimulatedTrade>,
+    pub trades: Vec<SimulatedTrade>,
     account_states: Vec<HashMap<usize, AccountSnapshot>>,
     current_timestamp: i64,
 }
@@ -244,7 +244,7 @@ impl Backtester {
 
             self.data
                 .entry(symbol)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(candle);
         }
 
@@ -272,7 +272,7 @@ impl Backtester {
     ) -> Result<SimulatedTrade> {
         debug!(
             "Simulating trade: {} {} {} @ {}",
-            side.is_buy().then(|| "BUY").unwrap_or("SELL"),
+            if side.is_buy() { "BUY" } else { "SELL" },
             size,
             symbol,
             price
@@ -432,7 +432,7 @@ impl Backtester {
     }
 
     /// Calculate Sharpe ratio
-    fn calculate_sharpe_ratio(&self, returns: &[f64]) -> f64 {
+    pub fn calculate_sharpe_ratio(&self, returns: &[f64]) -> f64 {
         if returns.is_empty() {
             return 0.0;
         }
@@ -453,7 +453,7 @@ impl Backtester {
     }
 
     /// Calculate maximum drawdown
-    fn calculate_max_drawdown(&self, equity_curve: &[f64]) -> f64 {
+    pub fn calculate_max_drawdown(&self, equity_curve: &[f64]) -> f64 {
         if equity_curve.is_empty() {
             return 0.0;
         }
@@ -516,7 +516,7 @@ impl Backtester {
     }
 
     /// Generate parameter combinations
-    fn generate_param_combinations(
+    pub fn generate_param_combinations(
         &self,
         param_ranges: &HashMap<String, Vec<f64>>,
     ) -> Vec<HashMap<String, f64>> {
