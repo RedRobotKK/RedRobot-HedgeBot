@@ -11,14 +11,13 @@
 
 use crate::models::market::{
     ExecutionResult, ExecutionStatus, LimitOrder, MarketData, MarketOrder, Order, OrderBook,
-    OrderSide, Position,
 };
 use crate::utils::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{info, warn};
 
 /// Protocol identifier for order execution
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -627,6 +626,7 @@ impl Default for OrderExecutionEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::market::OrderSide;
 
     fn create_test_engine() -> OrderExecutionEngine {
         OrderExecutionEngine::default()

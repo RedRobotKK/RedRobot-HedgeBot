@@ -50,3 +50,7 @@ coverage/
 **/secret_key
 **/credentials
 **/auth_token
+
+# Claude internal workspace files
+.claude/
+fix_main.py

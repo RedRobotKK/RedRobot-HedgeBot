@@ -39,7 +39,7 @@ echo "=== META END ==="
 echo ""
 echo "=== STEP tests ==="
 T_START=$(date +%s)
-cargo test --all 2>&1
+CARGO_BUILD_JOBS=1 cargo test --all -- --test-threads=1 2>&1
 TEST_EXIT=$?
 T_END=$(date +%s)
 echo "=== STEP tests exit=${TEST_EXIT} duration=$((T_END - T_START))s ==="

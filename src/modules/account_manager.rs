@@ -1,5 +1,5 @@
 /// Multi-account management system for trading across multiple protocols
-use crate::models::{AccountPurpose, HealthMetrics, Protocol, TradingAccount};
+use crate::models::{AccountPurpose, Protocol, TradingAccount};
 use crate::utils::{Error, Result};
 use std::collections::HashMap;
 

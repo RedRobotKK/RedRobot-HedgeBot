@@ -12,15 +12,15 @@
 //! All methods are fully async using tokio and reqwest.
 
 use crate::models::market::{
-    AccountInfo, ExecutionResult, ExecutionStatus, Fill, LimitOrder, MarketData, MarketOrder,
-    Order, OrderBook, OrderSide, Position,
+    AccountInfo, ExecutionStatus, Fill, LimitOrder, MarketData, MarketOrder,
+    OrderBook, OrderSide, Position,
 };
 use crate::utils::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 /// Hyperliquid API base URL
 const HYPERLIQUID_API_BASE: &str = "https://api.hyperliquid.com";

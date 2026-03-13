@@ -1,6 +1,5 @@
 /// Liquidation prevention and risk management
-use crate::models::{AccountInfo, HealthMetrics, LiquidationRisk};
-use crate::utils::{Error, Result};
+use crate::utils::Result;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 

@@ -249,7 +249,7 @@ impl AutonomousRunner {
             // Rebalance capital
             let volatility = 0.1 + (rand::random::<f64>() - 0.5) * 0.1;
             let momentum = (rand::random::<f64>() - 0.5) * 0.3;
-            let win_rate = (s.winning_decisions as f64 / (s.total_decisions.max(1)) as f64);
+            let win_rate = s.winning_decisions as f64 / s.total_decisions.max(1) as f64;
 
             if let Ok(new_allocs) = capital_mgr
                 .optimize_allocation(volatility, momentum, win_rate)
