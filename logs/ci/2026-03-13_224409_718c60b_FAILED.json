@@ -1,0 +1,209 @@
+{
+  "schema_version": "1.0",
+  "meta": {
+    "run_at": "2026-03-13T22:43:40Z",
+    "commit": "718c60b",
+    "commit_full": "718c60bc158ebb8b5cc737b1583b7ca946224d44",
+    "commit_message": "fix(clippy): resolve all 20 unused import/variable warnings",
+    "branch": "master",
+    "overall_status": "FAILED",
+    "triggered_by": "push"
+  },
+  "environment": {
+    "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
+    "cargo": "cargo 1.93.1 (083ac5135 2025-12-15)",
+    "os_kernel": "6.8.0-101-generic",
+    "arch": "x86_64",
+    "ram_total": "961Mi",
+    "swap_active": true
+  },
+  "steps": {
+    "tests": {
+      "status": "FAILED",
+      "exit_code": 101,
+      "duration_seconds": 12,
+      "total_passed": 0,
+      "total_failed": 0,
+      "total_ignored": 0,
+      "failures": []
+    },
+    "clippy": {
+      "status": "FAILED",
+      "exit_code": 101,
+      "duration_seconds": 14,
+      "error_count": 20,
+      "errors": [
+        {
+          "code": "E",
+          "message": "unused variable: `gap_midpoint`",
+          "file": "src/strategies/fair_value_gaps.rs",
+          "line": 51,
+          "col": 13
+        },
+        {
+          "code": "E",
+          "message": "unused variable: `gap_midpoint`",
+          "file": "src/strategies/fair_value_gaps.rs",
+          "line": 82,
+          "col": 13
+        },
+        {
+          "code": "E",
+          "message": "unused variable: `trade`",
+          "file": "src/simulator.rs",
+          "line": 144,
+          "col": 31
+        },
+        {
+          "code": "E",
+          "message": "unused variable: `position_value`",
+          "file": "src/fee_calculator.rs",
+          "line": 181,
+          "col": 13
+        },
+        {
+          "code": "E",
+          "message": "unused variable: `current`",
+          "file": "src/position_manager.rs",
+          "line": 160,
+          "col": 13
+        },
+        {
+          "code": "E",
+          "message": "unused variable: `expected_move_dollars`",
+          "file": "src/dynamic_position_sizing.rs",
+          "line": 133,
+          "col": 13
+        },
+        {
+          "code": "E",
+          "message": "variable `conflicting_signals` is assigned to, but never used",
+          "file": "src/frameworks.rs",
+          "line": 103,
+          "col": 13
+        },
+        {
+          "code": "E",
+          "message": "value assigned to `aligned_signals` is never read",
+          "file": "src/frameworks.rs",
+          "line": 102,
+          "col": 35
+        },
+        {
+          "code": "E",
+          "message": "value assigned to `conflicting_signals` is never read",
+          "file": "src/frameworks.rs",
+          "line": 140,
+          "col": 9
+        },
+        {
+          "code": "E",
+          "message": "unused variable: `score`",
+          "file": "src/ai_decision_engine.rs",
+          "line": 202,
+          "col": 13
+        },
+        {
+          "code": "E",
+          "message": "unused variable: `technical_score`",
+          "file": "src/ai_decision_engine.rs",
+          "line": 268,
+          "col": 9
+        },
+        {
+          "code": "E",
+          "message": "unused variable: `context`",
+          "file": "src/ai_decision_engine.rs",
+          "line": 382,
+          "col": 64
+        },
+        {
+          "code": "E",
+          "message": "unused variable: `metrics`",
+          "file": "src/strategy_analytics.rs",
+          "line": 275,
+          "col": 9
+        },
+        {
+          "code": "E",
+          "message": "unused variable: `account_size`",
+          "file": "src/scoring_system.rs",
+          "line": 494,
+          "col": 5
+        },
+        {
+          "code": "E",
+          "message": "unused variable: `stop_distance`",
+          "file": "src/price_action_scoring.rs",
+          "line": 51,
+          "col": 13
+        },
+        {
+          "code": "E",
+          "message": "unused variable: `score`",
+          "file": "src/price_action_scoring.rs",
+          "line": 142,
+          "col": 9
+        },
+        {
+          "code": "E",
+          "message": "unused variable: `bearish_patterns`",
+          "file": "src/price_action_scoring.rs",
+          "line": 249,
+          "col": 13
+        },
+        {
+          "code": "E",
+          "message": "type `modules::hyperliquid_protocol::OrderState` is more private than the item `modules::hyperliquid_protocol::Hyperliqu",
+          "file": "src/modules/hyperliquid_protocol.rs",
+          "line": 867,
+          "col": 5
+        },
+        {
+          "code": "E",
+          "message": "constant `HYPERLIQUID_WS_URI` is never used",
+          "file": "src/modules/hyperliquid_protocol.rs",
+          "line": 28,
+          "col": 7
+        },
+        {
+          "code": "E",
+          "message": "field `last_request_time` is never read",
+          "file": "src/modules/hyperliquid_protocol.rs",
+          "line": 59,
+          "col": 5
+        }
+      ]
+    },
+    "audit": {
+      "status": "PASSED",
+      "exit_code": 0,
+      "duration_seconds": 3,
+      "vulnerability_count": 2,
+      "vulnerabilities": [
+        {
+          "id": "RUSTSEC-2021-0141",
+          "url": "https://rustsec.org/advisories/RUSTSEC-2021-0141",
+          "crate": "rustls-pemfile",
+          "version": "1.0.4",
+          "title": "rustls-pemfile is unmaintained"
+        },
+        {
+          "id": "RUSTSEC-2025-0134",
+          "url": "https://rustsec.org/advisories/RUSTSEC-2025-0134",
+          "crate": "wasm-bindgen",
+          "version": "0.2.111"
+        }
+      ]
+    }
+  },
+  "service": {
+    "name": "hedgebot",
+    "status": "active",
+    "active_since": "Thu 2026-03-12 07:15:10 UTC",
+    "recent_logs": [
+      "Mar 12 07:15:10 ubuntu-s-1vcpu-1gb-sgp1-01 systemd[1]: Started hedgebot.service - RedRobot HedgeBot.",
+      "Mar 12 07:15:13 ubuntu-s-1vcpu-1gb-sgp1-01 redrobot-hedgebot[217810]: [2026-03-12T07:15:13.533Z ERROR redrobot_hedgebot] Dashboard: Address already in use (os error 98)"
+    ]
+  }
+}
