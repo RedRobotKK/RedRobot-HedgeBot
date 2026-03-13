@@ -21,10 +21,12 @@ Cargo.lock
 *~
 .DS_Store
 
-# Logs
-*.log
-logs/
+# Logs — ignore runtime/scratch logs but track CI audit logs in logs/ci/
+# NOTE: git cannot negate a subdir of an ignored parent, so we list
+# specific subdirs to ignore rather than ignoring logs/ wholesale.
 /var/log/
+logs/tmp/
+logs/*.log
 
 # Backups
 *.backup

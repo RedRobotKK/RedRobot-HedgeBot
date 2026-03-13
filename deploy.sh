@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # deploy.sh – push to GitHub, pull & build on VPS, restart via systemd
 # Usage:
-#   ./deploy.sh              – full deploy (git push + VPS pull/build/restart)
+#   ./deploy.sh              – full deploy (CI gate + push to GitHub + build + restart)
 #   ./deploy.sh --vps-only   – skip git push, just pull/build/restart on VPS
 #   ./deploy.sh --push-only  – push to GitHub only, don't touch VPS
 #   ./deploy.sh --restart    – restart service on VPS without rebuilding
 #   ./deploy.sh --test-only  – run CI quality gate on VPS without deploying
 #   ./deploy.sh --no-test    – skip CI gate (emergency deploys only)
+#   ./deploy.sh --no-log-push – skip uploading CI log to GitHub
 #
 # CI Quality Gate (runs before every build):
 #   1. cargo test --all        – all unit + integration tests must pass
@@ -16,9 +17,12 @@
 #
 # Logs:
 #   Every CI run appends a full timestamped report to:
-#     /var/log/hedgebot-ci.log   (on VPS — CI gate output)
-#     /var/log/hedgebot-deploy.log (on VPS — full deploy output)
-#   On failure, the last 60 lines of the CI log are printed here automatically.
+#     /var/log/hedgebot-ci.log      (on VPS — CI gate output, persistent)
+#     /var/log/hedgebot-deploy.log  (on VPS — build + restart output)
+#   After each run the CI log for that run is also:
+#     SCP'd back locally → committed to logs/ci/ → pushed to GitHub
+#     Browse at: https://github.com/<org>/<repo>/tree/master/logs/ci/
+#   On failure, the last 60 lines of the CI log are printed automatically.
 
 set -euo pipefail
 
@@ -48,22 +52,25 @@ DO_PUSH=true
 DO_DEPLOY=true
 DO_BUILD=true
 DO_TEST=true
+DO_LOG_PUSH=true   # upload CI log to GitHub after each run
 
 for arg in "$@"; do
   case $arg in
-    --vps-only)   DO_PUSH=false ;;
-    --push-only)  DO_DEPLOY=false ;;
-    --restart)    DO_BUILD=false; DO_TEST=false ;;
-    --test-only)  DO_PUSH=false; DO_BUILD=false ;;
-    --no-test)    DO_TEST=false; warn "--no-test: skipping CI gate (emergency mode)" ;;
+    --vps-only)    DO_PUSH=false ;;
+    --push-only)   DO_DEPLOY=false ;;
+    --restart)     DO_BUILD=false; DO_TEST=false ;;
+    --test-only)   DO_PUSH=false; DO_BUILD=false ;;
+    --no-test)     DO_TEST=false; warn "--no-test: skipping CI gate (emergency mode)" ;;
+    --no-log-push) DO_LOG_PUSH=false ;;
     --help|-h)
-      echo "Usage: $0 [--vps-only | --push-only | --restart | --test-only | --no-test]"
-      echo "  (no flags)    full deploy: CI gate + push to GitHub + build + restart VPS"
-      echo "  --vps-only    skip GitHub push, just CI gate + build & restart on VPS"
-      echo "  --push-only   push to GitHub only, don't touch VPS"
-      echo "  --restart     SSH restart the service without rebuilding or testing"
-      echo "  --test-only   run CI quality gate on VPS only (no build/restart)"
-      echo "  --no-test     skip CI gate (emergency deploys only)"
+      echo "Usage: $0 [--vps-only | --push-only | --restart | --test-only | --no-test | --no-log-push]"
+      echo "  (no flags)     full deploy: CI gate + push to GitHub + build + restart VPS"
+      echo "  --vps-only     skip GitHub push, just CI gate + build & restart on VPS"
+      echo "  --push-only    push to GitHub only, don't touch VPS"
+      echo "  --restart      SSH restart the service without rebuilding or testing"
+      echo "  --test-only    run CI quality gate on VPS only (no build/restart)"
+      echo "  --no-test      skip CI gate (emergency deploys only)"
+      echo "  --no-log-push  skip uploading CI log to GitHub"
       exit 0 ;;
     *) error "Unknown argument: $arg"; exit 1 ;;
   esac
@@ -431,6 +438,58 @@ ENDSSH
 
 fi
 
+# ── 3. Upload CI log to GitHub ────────────────────────────────────────────────
+# SCP the latest CI run out of the VPS, commit it to logs/ci/ in the repo,
+# and push to GitHub. Gives a permanent browsable audit trail per deploy/test run.
+# Skipped automatically if: not connected to VPS, --no-log-push, or --push-only.
+if $DO_DEPLOY && $DO_LOG_PUSH; then
+  header "Upload CI log → GitHub"
+
+  # Determine a meaningful result tag from the CI run (PASS / FAIL / SKIPPED)
+  if $DO_TEST; then
+    CI_RESULT_TAG=$( $SSH "tail -20 ${CI_LOG} 2>/dev/null | grep -oP '(PASSED|FAILED)' | tail -1" 2>/dev/null || echo "UNKNOWN" )
+    CI_RESULT_TAG="${CI_RESULT_TAG:-UNKNOWN}"
+  else
+    CI_RESULT_TAG="SKIPPED"
+  fi
+
+  # Fetch the commit hash from the VPS (what was actually deployed)
+  DEPLOYED_COMMIT=$( $SSH "git -C ${VPS_DIR} rev-parse --short HEAD 2>/dev/null" || git rev-parse --short HEAD )
+
+  # Filename: logs/ci/YYYY-MM-DD_HHMMSS_<commit>_<result>.log
+  TIMESTAMP=$(date '+%Y-%m-%d_%H%M%S')
+  LOG_FILENAME="logs/ci/${TIMESTAMP}_${DEPLOYED_COMMIT}_${CI_RESULT_TAG}.log"
+  LOG_DIR="$(git rev-parse --show-toplevel)/logs/ci"
+
+  mkdir -p "$LOG_DIR"
+
+  if $DO_TEST; then
+    info "Downloading CI log from VPS…"
+    # Extract only the latest CI run from the cumulative log (since last separator)
+    $SSH "awk '/^════/{buf=\"\"} {buf=buf\$0\"\n\"} END{printf \"%s\", buf}' ${CI_LOG} 2>/dev/null" \
+      > "${LOG_DIR}/$(basename ${LOG_FILENAME})" 2>/dev/null \
+      || $SSH "tail -120 ${CI_LOG} 2>/dev/null" > "${LOG_DIR}/$(basename ${LOG_FILENAME})"
+  else
+    # No CI run — write a brief marker file so the push still records the deploy
+    {
+      echo "CI gate skipped (--no-test or --restart) at ${TIMESTAMP}"
+      echo "Deployed commit: ${DEPLOYED_COMMIT}"
+      echo "Operator: $(git config user.name 2>/dev/null || echo unknown)"
+    } > "${LOG_DIR}/$(basename ${LOG_FILENAME})"
+  fi
+
+  # Commit and push (non-fatal — a log push failure must not break a successful deploy)
+  (
+    cd "$(git rev-parse --show-toplevel)"
+    git add "logs/ci/"
+    EMOJI=$([ "$CI_RESULT_TAG" = "PASSED" ] && echo "✅" || [ "$CI_RESULT_TAG" = "SKIPPED" ] && echo "⏭️" || echo "❌")
+    git commit -m "ci-log: ${TIMESTAMP} ${DEPLOYED_COMMIT} ${EMOJI} ${CI_RESULT_TAG}" \
+      --no-verify 2>/dev/null
+    git push origin "${BRANCH}" 2>&1 | sed 's/^/  /'
+    success "CI log pushed → logs/ci/$(basename ${LOG_FILENAME})"
+  ) || warn "Log push failed (non-fatal) — deploy still succeeded. Push manually if needed."
+fi
+
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
 success "Deploy complete  🚀  Dashboard → http://${VPS_IP}:3000"
@@ -439,3 +498,5 @@ dim "  Logs on VPS:"
 dim "    CI gate  : ${CI_LOG}"
 dim "    Deploy   : ${DEPLOY_LOG}"
 dim "    Service  : journalctl -u ${SERVICE} -f"
+dim "  Logs on GitHub:"
+dim "    Browse   : https://github.com/$(git remote get-url origin 2>/dev/null | sed 's/.*github.com[:/]//' | sed 's/\.git$//')/tree/${BRANCH}/logs/ci"
