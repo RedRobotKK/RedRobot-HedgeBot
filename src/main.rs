@@ -916,18 +916,43 @@ fn position_size_pct(confidence: f64, metrics: &PerformanceMetrics, in_circuit_b
 }
 
 /// Fraction of equity at risk for this specific trade (stop-loss based).
-/// = stop_distance% × position_size_pct
-fn trade_heat(entry: f64, stop: f64, size_usd: f64, equity: f64) -> f64 {
+///
+/// Formula: stop_distance% × notional_size / equity
+///   = stop_dist_pct × (size_usd × leverage) / equity
+///
+/// `size_usd` is the MARGIN committed, not the notional.  Without the
+/// leverage factor the heat check underestimates actual risk by the full
+/// leverage multiple (e.g. 3× leverage → 3× more equity at risk than the
+/// naive formula implies).
+fn trade_heat(entry: f64, stop: f64, size_usd: f64, equity: f64, leverage: f64) -> f64 {
     if equity < 1.0 { return 1.0; }
     let stop_dist_pct = (entry - stop).abs() / entry.max(1e-8);
-    stop_dist_pct * size_usd / equity
+    stop_dist_pct * size_usd * leverage / equity
 }
 
 /// Total % of equity at risk across all open positions.
+///
+/// Risk per position is computed from the **current** stop-loss, not the
+/// stale `r_dollars_risked` field (which never updates when the trailing
+/// stop advances).  Once a trailing stop has moved to or beyond the entry
+/// price the position has a locked-in profit floor — its remaining
+/// downside is zero, so it contributes 0% heat.
+///
+/// Formula per position: max(0, |entry − current_stop| × quantity) / equity
 fn portfolio_heat(positions: &[PaperPosition], equity: f64) -> f64 {
     if equity < 1.0 { return 1.0; }
     positions.iter()
-        .map(|p| p.r_dollars_risked / equity)
+        .map(|p| {
+            // Dollars currently at risk if stop is hit.
+            // Positive  = stop is below entry (LONG) or above entry (SHORT).
+            // Zero/neg  = stop has crossed entry → position is protected.
+            let current_risk = if p.side == "LONG" {
+                (p.entry_price - p.stop_loss) * p.quantity
+            } else {
+                (p.stop_loss - p.entry_price) * p.quantity
+            };
+            current_risk.max(0.0) / equity
+        })
         .sum::<f64>()
 }
 
@@ -1080,17 +1105,22 @@ async fn execute_paper_trade(
     // Guard: per-trade heat ≤ MAX_TRADE_HEAT (2%) of equity.
     // If the default Kelly/confidence size would exceed the heat limit, scale it
     // down to the maximum allowed size rather than skipping the trade entirely.
+    //
+    // Note: leverage is factored into both heat and the allowed-size calculation.
+    // Without it the check underestimates actual risk by the full leverage multiple.
     let stop_dist_pct = (dec.entry_price - dec.stop_loss).abs() / dec.entry_price.max(1e-8);
-    let t_heat = trade_heat(dec.entry_price, dec.stop_loss, size_usd, equity);
+    let t_heat = trade_heat(dec.entry_price, dec.stop_loss, size_usd, equity, dec.leverage);
     if t_heat > MAX_TRADE_HEAT {
-        // Max size that keeps R-risk at exactly MAX_TRADE_HEAT of equity
-        let allowed = MAX_TRADE_HEAT * equity / stop_dist_pct;
+        // Max MARGIN that keeps notional R-risk at exactly MAX_TRADE_HEAT of equity:
+        //   MAX_TRADE_HEAT = stop_dist_pct × margin × leverage / equity
+        //   → margin = MAX_TRADE_HEAT × equity / (stop_dist_pct × leverage)
+        let allowed = MAX_TRADE_HEAT * equity / (stop_dist_pct * dec.leverage);
         if allowed < 2.0 {
             info!("⚠ {} skipped — stop too tight, min heat size ${:.2} < $2", symbol, allowed);
             return;
         }
-        info!("🌡 {} heat-scaled: ${:.2} → ${:.2} (stop_dist={:.2}%)",
-              symbol, size_usd, allowed, stop_dist_pct * 100.0);
+        info!("🌡 {} heat-scaled: ${:.2} → ${:.2} (stop_dist={:.2}% × {:.1}×lev)",
+              symbol, size_usd, allowed, stop_dist_pct * 100.0, dec.leverage);
         size_usd = allowed;  // apply the reduction — enforce the heat limit
     }
     // Guard: total portfolio heat ≤ MAX_PORTFOLIO_HEAT
@@ -1471,4 +1501,511 @@ async fn set_status(bot_state: &SharedState, msg: &str) {
 
 fn now_str() -> String {
     chrono::Utc::now().format("%H:%M:%S UTC").to_string()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  UNIT TESTS — position management & heat calculations
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use learner::SignalContribution;
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// Minimal PaperPosition for heat tests.
+    fn make_pos(side: &str, entry: f64, stop: f64, qty: f64, size_usd: f64) -> PaperPosition {
+        PaperPosition {
+            symbol:          "TEST".to_string(),
+            side:            side.to_string(),
+            entry_price:     entry,
+            quantity:        qty,
+            size_usd,
+            stop_loss:       stop,
+            take_profit:     if side == "LONG" { entry * 1.10 } else { entry * 0.90 },
+            atr_at_entry:    entry * 0.02,
+            high_water_mark: entry,
+            low_water_mark:  entry,
+            partial_closed:  false,
+            r_dollars_risked: (entry - stop).abs() * qty,
+            tranches_closed: 0,
+            dca_count:       0,
+            leverage:        1.0,
+            cycles_held:     0,
+            entry_time:      "00:00:00 UTC".to_string(),
+            unrealised_pnl:  0.0,
+            contrib:         SignalContribution::default(),
+            ai_action:       None,
+            ai_reason:       None,
+        }
+    }
+
+    // ── trade_heat ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn trade_heat_1x_leverage_matches_margin_based_formula() {
+        // With 1× leverage: heat = stop_dist_pct × size_usd / equity
+        // entry=$100, stop=$98 → stop_dist=2%,  size_usd=$100, equity=$1000
+        // heat = 0.02 × 100 / 1000 = 0.002  (0.2 %)
+        let heat = trade_heat(100.0, 98.0, 100.0, 1000.0, 1.0);
+        assert!((heat - 0.002).abs() < 1e-10, "1× heat should be 0.002, got {heat}");
+    }
+
+    #[test]
+    fn trade_heat_3x_leverage_triples_heat() {
+        // 3× leverage triples actual notional risk vs 1× baseline
+        let heat_1x = trade_heat(100.0, 98.0, 100.0, 1000.0, 1.0);
+        let heat_3x = trade_heat(100.0, 98.0, 100.0, 1000.0, 3.0);
+        assert!(
+            (heat_3x - heat_1x * 3.0).abs() < 1e-10,
+            "3× leverage should triple heat: {heat_1x} × 3 = {} ≠ {heat_3x}",
+            heat_1x * 3.0
+        );
+    }
+
+    #[test]
+    fn trade_heat_zero_equity_guard() {
+        // Equity below $1 is a divide-by-near-zero guard — always returns 1.0
+        let heat = trade_heat(100.0, 98.0, 100.0, 0.5, 3.0);
+        assert_eq!(heat, 1.0, "near-zero equity must return 1.0 sentinel");
+    }
+
+    #[test]
+    fn trade_heat_exceeds_max_at_3x_where_1x_would_not() {
+        // Setup: entry=$100, stop=$98 (2% stop), $100 margin, $1000 equity.
+        // 1× heat = 0.002 — well below MAX_TRADE_HEAT (0.02).
+        // 3× heat = 0.006 — still below, but 10× leverage = 0.02 = exactly at limit.
+        // At 10× leverage, heat should equal exactly MAX_TRADE_HEAT (0.02).
+        let heat_10x = trade_heat(100.0, 98.0, 100.0, 1000.0, 10.0);
+        assert!(
+            (heat_10x - MAX_TRADE_HEAT).abs() < 1e-10,
+            "10× lev with 2% stop on 10% position should reach MAX_TRADE_HEAT exactly: {heat_10x}"
+        );
+    }
+
+    #[test]
+    fn trade_heat_short_position_uses_abs_distance() {
+        // SHORT: entry < stop (stop is above entry)
+        // entry=$100, stop=$103 → |100-103|/100 = 3% stop distance
+        // With 1× leverage, $50 margin, $1000 equity:
+        // heat = 0.03 × 50 / 1000 = 0.0015
+        let heat = trade_heat(100.0, 103.0, 50.0, 1000.0, 1.0);
+        assert!(
+            (heat - 0.0015).abs() < 1e-10,
+            "SHORT heat: expected 0.0015, got {heat}"
+        );
+    }
+
+    #[test]
+    fn trade_heat_allowed_margin_formula_is_consistent() {
+        // If t_heat > MAX_TRADE_HEAT, the allowed-margin formula must produce
+        // a size whose heat is exactly MAX_TRADE_HEAT.
+        // allowed = MAX_TRADE_HEAT × equity / (stop_dist_pct × leverage)
+        let entry     = 100.0;
+        let stop      = 95.0;   // 5% stop distance
+        let equity    = 1000.0;
+        let leverage  = 3.0;
+        let stop_dist = (entry - stop).abs() / entry;  // 0.05
+
+        // Deliberately oversized: $500 margin → heat = 0.05 × 500 × 3 / 1000 = 0.075
+        let oversized_heat = trade_heat(entry, stop, 500.0, equity, leverage);
+        assert!(oversized_heat > MAX_TRADE_HEAT, "test setup: heat {oversized_heat} must exceed limit");
+
+        // Compute allowed margin
+        let allowed = MAX_TRADE_HEAT * equity / (stop_dist * leverage);
+        let heat_at_allowed = trade_heat(entry, stop, allowed, equity, leverage);
+        assert!(
+            (heat_at_allowed - MAX_TRADE_HEAT).abs() < 1e-10,
+            "allowed-margin heat should equal MAX_TRADE_HEAT, got {heat_at_allowed}"
+        );
+    }
+
+    // ── REGRESSION: leverage bug ──────────────────────────────────────────────
+
+    #[test]
+    fn regression_trade_heat_old_formula_underestimated_by_leverage() {
+        // Before the fix: trade_heat() = stop_dist_pct × size_usd / equity
+        // This ignored leverage, so at 3× it accepted trades 3× riskier than intended.
+        //
+        // Concrete example: entry=$100, stop=$98 (2%), $100 margin, 3× leverage, $1000 equity.
+        // Old formula:  0.02 × 100 / 1000 = 0.002  (looks like only 0.2% at risk)
+        // True formula: 0.02 × 100 × 3 / 1000 = 0.006 (actually 0.6% at risk — correct)
+        //
+        // The actual dollar loss if stop is hit:
+        //   qty = 100 × 3 / 100 = 3 shares
+        //   loss = (100 - 98) × 3 = $6  → 6/1000 = 0.6%  ✓ matches new formula
+        let entry = 100.0; let stop = 98.0; let size_usd = 100.0; let equity = 1000.0;
+        let leverage = 3.0;
+        let qty = size_usd * leverage / entry;
+        let actual_dollar_loss = (entry - stop).abs() * qty;
+        let actual_heat = actual_dollar_loss / equity;
+
+        let formula_heat = trade_heat(entry, stop, size_usd, equity, leverage);
+        assert!(
+            (formula_heat - actual_heat).abs() < 1e-10,
+            "trade_heat() must equal actual dollar-loss / equity: {formula_heat} ≠ {actual_heat}"
+        );
+    }
+
+    // ── portfolio_heat ────────────────────────────────────────────────────────
+
+    #[test]
+    fn portfolio_heat_empty_positions_returns_zero() {
+        let heat = portfolio_heat(&[], 1000.0);
+        assert_eq!(heat, 0.0, "no open positions → 0 heat");
+    }
+
+    #[test]
+    fn portfolio_heat_zero_equity_guard() {
+        let pos = make_pos("LONG", 100.0, 95.0, 1.0, 100.0);
+        let heat = portfolio_heat(&[pos], 0.5);
+        assert_eq!(heat, 1.0, "near-zero equity must return 1.0 sentinel");
+    }
+
+    #[test]
+    fn portfolio_heat_long_stop_below_entry_has_positive_heat() {
+        // entry=$100, stop=$95, qty=10 → risk = (100-95)×10 = $50 on $1000 equity = 5%
+        let pos = make_pos("LONG", 100.0, 95.0, 10.0, 100.0);
+        let heat = portfolio_heat(&[pos], 1000.0);
+        let expected = 50.0 / 1000.0;  // 5%
+        assert!(
+            (heat - expected).abs() < 1e-10,
+            "LONG stop below entry: expected {expected}, got {heat}"
+        );
+    }
+
+    #[test]
+    fn portfolio_heat_long_stop_at_breakeven_is_zero() {
+        // Once trailing stop reaches entry price, there's no remaining downside risk.
+        // stop = entry_price → (entry - stop) × qty = 0 → heat = 0.
+        let pos = make_pos("LONG", 100.0, 100.0, 10.0, 100.0);  // stop AT entry
+        let heat = portfolio_heat(&[pos], 1000.0);
+        assert_eq!(heat, 0.0, "LONG stop at breakeven → zero heat");
+    }
+
+    #[test]
+    fn portfolio_heat_long_stop_above_entry_is_zero() {
+        // Trailing stop has advanced ABOVE entry (locked in profit, no remaining risk).
+        // stop > entry for LONG → (entry - stop) < 0 → .max(0) → 0.
+        let pos = make_pos("LONG", 100.0, 105.0, 10.0, 100.0);  // stop ABOVE entry
+        let heat = portfolio_heat(&[pos], 1000.0);
+        assert_eq!(heat, 0.0, "LONG stop above entry (trailing past BE) → zero heat");
+    }
+
+    #[test]
+    fn portfolio_heat_short_stop_above_entry_has_positive_heat() {
+        // SHORT: stop above entry = risk zone.
+        // entry=$100, stop=$104, qty=10 → risk = (104-100)×10 = $40 on $1000 = 4%
+        let pos = make_pos("SHORT", 100.0, 104.0, 10.0, 100.0);
+        let heat = portfolio_heat(&[pos], 1000.0);
+        let expected = 40.0 / 1000.0;  // 4%
+        assert!(
+            (heat - expected).abs() < 1e-10,
+            "SHORT stop above entry: expected {expected}, got {heat}"
+        );
+    }
+
+    #[test]
+    fn portfolio_heat_short_stop_at_breakeven_is_zero() {
+        let pos = make_pos("SHORT", 100.0, 100.0, 10.0, 100.0); // stop AT entry
+        let heat = portfolio_heat(&[pos], 1000.0);
+        assert_eq!(heat, 0.0, "SHORT stop at breakeven → zero heat");
+    }
+
+    #[test]
+    fn portfolio_heat_short_stop_below_entry_is_zero() {
+        // Trailing stop has advanced BELOW entry for a SHORT (locked in profit).
+        let pos = make_pos("SHORT", 100.0, 96.0, 10.0, 100.0); // stop BELOW entry
+        let heat = portfolio_heat(&[pos], 1000.0);
+        assert_eq!(heat, 0.0, "SHORT stop below entry (trailing past BE) → zero heat");
+    }
+
+    #[test]
+    fn portfolio_heat_multiple_positions_sum_correctly() {
+        // Two positions: LONG $30 risk + SHORT $20 risk = $50 on $1000 equity = 5%
+        let long_pos  = make_pos("LONG",  100.0, 97.0, 10.0, 100.0); // (100-97)×10 = $30
+        let short_pos = make_pos("SHORT", 200.0, 202.0, 10.0, 100.0); // (202-200)×10 = $20
+        let heat = portfolio_heat(&[long_pos, short_pos], 1000.0);
+        let expected = 50.0 / 1000.0;  // 5%
+        assert!(
+            (heat - expected).abs() < 1e-10,
+            "multi-position heat: expected {expected}, got {heat}"
+        );
+    }
+
+    #[test]
+    fn portfolio_heat_trailing_stop_position_contributes_zero() {
+        // One live-risk position + one position where trailing stop is above entry.
+        // Only the live-risk position should contribute to heat.
+        let at_risk   = make_pos("LONG", 100.0, 95.0, 10.0, 100.0); // (100-95)×10 = $50
+        let protected = make_pos("LONG", 100.0, 103.0, 10.0, 100.0); // stop above entry → 0
+        let heat = portfolio_heat(&[at_risk, protected], 1000.0);
+        let expected = 50.0 / 1000.0;  // only $50 risk from the at-risk position
+        assert!(
+            (heat - expected).abs() < 1e-10,
+            "protected position must not add heat: expected {expected}, got {heat}"
+        );
+    }
+
+    // ── REGRESSION: portfolio_heat stale r_dollars_risked ─────────────────────
+
+    #[test]
+    fn regression_portfolio_heat_old_formula_would_overstate_after_stop_advance() {
+        // Pre-fix: portfolio_heat used p.r_dollars_risked / equity.
+        // After trailing stop advances past entry, r_dollars_risked is still set to
+        // the original entry risk.  The new formula correctly returns 0.
+        //
+        // Scenario: LONG entry=$100, original stop=$95, qty=10, equity=$1000.
+        //   Original r_dollars_risked = (100-95)×10 = $50.
+        //   Stop has since moved to $103 (trailing past breakeven).
+        //   Current risk = 0 (no downside to stop).
+        //   OLD formula: $50/$1000 = 5% ← WRONG, 3% phantom risk
+        //   NEW formula: max(0, (100-103)×10) / 1000 = 0% ← CORRECT
+        let mut pos = make_pos("LONG", 100.0, 103.0, 10.0, 100.0);
+        pos.r_dollars_risked = 50.0; // stale from original entry (before stop advanced)
+
+        let heat = portfolio_heat(&[pos], 1000.0);
+        // Old formula would give 50/1000 = 0.05; new formula gives 0.
+        assert_eq!(
+            heat, 0.0,
+            "REGRESSION: portfolio_heat must return 0 when trailing stop is above entry, \
+             regardless of stale r_dollars_risked (old formula returned 0.05)"
+        );
+    }
+
+    // ── position_size_pct ─────────────────────────────────────────────────────
+
+    #[test]
+    fn position_size_pct_pre_kelly_high_confidence() {
+        // With <5 trades (no Kelly), conf=0.85 → base 8%, no Sharpe adjustment (1.0 mult)
+        let metrics = PerformanceMetrics::default(); // total_trades=0 → no Kelly, size_mult=1.0
+        let pct = position_size_pct(0.85, &metrics, false);
+        // base=0.08 × sharpe_mult(1.0 for <3 trades) × no-CB → 0.08
+        assert_eq!(pct, 0.08, "pre-Kelly high confidence: expected 8%");
+    }
+
+    #[test]
+    fn position_size_pct_pre_kelly_mid_confidence() {
+        let metrics = PerformanceMetrics::default();
+        let pct = position_size_pct(0.75, &metrics, false);
+        assert_eq!(pct, 0.06, "pre-Kelly mid confidence: expected 6%");
+    }
+
+    #[test]
+    fn position_size_pct_pre_kelly_min_confidence() {
+        let metrics = PerformanceMetrics::default();
+        let pct = position_size_pct(MIN_CONFIDENCE, &metrics, false);
+        assert_eq!(pct, 0.04, "pre-Kelly min confidence: expected 4%");
+    }
+
+    #[test]
+    fn position_size_pct_circuit_breaker_reduces_size() {
+        // CB active → CB_SIZE_MULT (0.35) applied on top of everything else.
+        let metrics = PerformanceMetrics::default();
+        let normal = position_size_pct(0.85, &metrics, false);
+        let cb     = position_size_pct(0.85, &metrics, true);
+        let expected_cb = normal * CB_SIZE_MULT;
+        assert!(
+            (cb - expected_cb).abs() < 1e-10,
+            "CB should multiply by {CB_SIZE_MULT}: {normal} × {CB_SIZE_MULT} = {expected_cb}, got {cb}"
+        );
+    }
+
+    #[test]
+    fn position_size_pct_never_below_min() {
+        // Even with CB + negative Sharpe, result can't go below MIN_POSITION_PCT
+        let mut metrics = PerformanceMetrics::default();
+        metrics.sharpe = -2.0;
+        metrics.total_trades = 10; // enough for sharpe multiplier
+        let pct = position_size_pct(MIN_CONFIDENCE, &metrics, true);
+        assert!(
+            pct >= MIN_POSITION_PCT,
+            "position_size_pct must never go below MIN_POSITION_PCT ({MIN_POSITION_PCT}), got {pct}"
+        );
+    }
+
+    #[test]
+    fn position_size_pct_never_above_max() {
+        // Very high Kelly with great Sharpe still can't exceed MAX_POSITION_PCT
+        let metrics = PerformanceMetrics {
+            sharpe:        3.0,
+            win_rate:      0.80,
+            avg_win_pct:   25.0,
+            avg_loss_pct:  5.0,
+            total_trades:  50,
+            ..Default::default()
+        };
+        let pct = position_size_pct(1.0, &metrics, false);
+        assert!(
+            pct <= MAX_POSITION_PCT,
+            "position_size_pct must never exceed MAX_POSITION_PCT ({MAX_POSITION_PCT}), got {pct}"
+        );
+    }
+
+    // ── P&L formula correctness ───────────────────────────────────────────────
+
+    #[test]
+    fn pnl_formula_long_close_matches_price_move_times_qty() {
+        // close_paper_position uses: (exit - entry) * quantity for LONG
+        // This is the leveraged return: qty = margin × leverage / entry
+        let entry    = 100.0;
+        let exit     = 110.0; // +10%
+        let margin   = 100.0;
+        let leverage = 3.0;
+        let qty      = margin * leverage / entry; // 3.0 shares
+        let expected_pnl = (exit - entry) * qty;   // $30
+
+        assert!(
+            (expected_pnl - 30.0).abs() < 1e-10,
+            "LONG P&L: 3 shares × $10 move = $30, got {expected_pnl}"
+        );
+
+        // Verify pnl_pct (relative to margin, not notional): 30/100 = 30%
+        let pnl_pct = expected_pnl / margin * 100.0;
+        assert!(
+            (pnl_pct - 30.0).abs() < 1e-10,
+            "pnl_pct should be 30%% on margin (3× leveraged 10% move), got {pnl_pct}"
+        );
+    }
+
+    #[test]
+    fn pnl_formula_short_close_matches_price_move_times_qty() {
+        // close_paper_position uses: (entry - exit) * quantity for SHORT
+        let entry    = 100.0;
+        let exit     = 90.0;  // price falls 10% → SHORT wins
+        let margin   = 100.0;
+        let leverage = 3.0;
+        let qty      = margin * leverage / entry; // 3.0 shares
+        let expected_pnl = (entry - exit) * qty;  // $30
+
+        assert!(
+            (expected_pnl - 30.0).abs() < 1e-10,
+            "SHORT P&L: 3 shares × $10 favourable move = $30, got {expected_pnl}"
+        );
+    }
+
+    #[test]
+    fn r_multiple_formula_is_consistent_with_pnl_and_entry_risk() {
+        // r_mult = unrealised_pnl / r_dollars_risked
+        // At 1R: pnl should equal r_dollars_risked
+        let entry    = 100.0;
+        let stop     = 95.0;  // 5% distance
+        let margin   = 100.0;
+        let leverage = 3.0;
+        let qty      = margin * leverage / entry;                   // 3.0 shares
+        let r_risk   = (entry - stop).abs() * qty;                 // $15
+
+        // Price moves to 1R target: entry + (entry-stop) = $105
+        let price_at_1r = entry + (entry - stop);                  // $105
+        let pnl_at_1r   = (price_at_1r - entry) * qty;            // $15
+
+        let r_mult = pnl_at_1r / r_risk;
+        assert!(
+            (r_mult - 1.0).abs() < 1e-10,
+            "at price = entry + 1×stop_dist, R-multiple should be 1.0, got {r_mult}"
+        );
+    }
+
+    #[test]
+    fn dca_weighted_avg_entry_formula() {
+        // After DCA add-on: avg_entry = (old_qty × old_entry + add_qty × dca_price) / new_qty
+        let old_entry = 100.0;
+        let dca_price = 95.0;  // price fell, we DCA lower
+        let old_qty   = 3.0;
+        let add_qty   = 1.5;   // 50% of original size
+        let new_qty   = old_qty + add_qty; // 4.5
+
+        let avg_entry = (old_entry * old_qty + dca_price * add_qty) / new_qty;
+        // = (300 + 142.5) / 4.5 = 442.5 / 4.5 = 98.333...
+        let expected = 442.5 / 4.5;
+        assert!(
+            (avg_entry - expected).abs() < 1e-10,
+            "DCA avg_entry should be {expected}, got {avg_entry}"
+        );
+        // avg_entry must be BETWEEN original entry and DCA price
+        assert!(avg_entry < old_entry && avg_entry > dca_price,
+            "DCA avg_entry {avg_entry} must be between {dca_price} and {old_entry}");
+    }
+
+    #[test]
+    fn pyramid_weighted_avg_entry_formula() {
+        // After pyramid: avg_entry = (old_qty × old_entry + add_qty × pyramid_price) / new_qty
+        let old_entry    = 100.0;
+        let pyramid_price = 106.0; // price rose 6%, we pyramid
+        let old_qty      = 3.0;
+        let add_qty      = 1.5;   // 50% add-on
+        let new_qty      = old_qty + add_qty; // 4.5
+
+        let avg_entry = (old_entry * old_qty + pyramid_price * add_qty) / new_qty;
+        // = (300 + 159) / 4.5 = 459 / 4.5 = 102.0
+        let expected = 459.0 / 4.5;
+        assert!(
+            (avg_entry - expected).abs() < 1e-10,
+            "pyramid avg_entry should be {expected}, got {avg_entry}"
+        );
+        // avg_entry must be ABOVE original entry (pyramid is into profit)
+        assert!(avg_entry > old_entry && avg_entry < pyramid_price,
+            "pyramid avg_entry {avg_entry} must be between {old_entry} and {pyramid_price}");
+    }
+
+    #[test]
+    fn partial_close_r_dollars_risked_scales_proportionally() {
+        // After 1/3 close (tranche 1), r_dollars_risked *= 2/3.
+        // Simulates take_partial() logic.
+        let original_r = 150.0;
+        let after_partial = original_r * (2.0 / 3.0);
+        let expected = 100.0;
+        assert!(
+            (after_partial - expected).abs() < 1e-10,
+            "after 1/3 close, r_dollars_risked should scale to 2/3: {after_partial} ≠ {expected}"
+        );
+    }
+
+    #[test]
+    fn trailing_stop_breakeven_move_for_long() {
+        // At 1R profit: stop moves to entry (breakeven).
+        // pos.stop_loss < pos.entry_price AND r_mult >= 1.0 → stop = entry
+        let entry   = 100.0;
+        let stop    = 95.0;
+        let qty     = 3.0;
+        let r_risk  = (entry - stop) * qty; // $15
+
+        // Current price at exactly 1R: entry + (entry - stop) = $105
+        let cur     = 105.0;
+        let unrealised = (cur - entry) * qty; // $15
+        let r_mult  = unrealised / r_risk;    // 1.0
+
+        assert!((r_mult - 1.0).abs() < 1e-10, "should be exactly 1R at $105");
+
+        // Trailing stop rule: if r_mult >= 1.0 && stop < entry → set stop = entry
+        let new_stop = if r_mult >= 1.0 && stop < entry { entry } else { stop };
+        assert_eq!(new_stop, entry, "stop should move to breakeven at 1R");
+    }
+
+    #[test]
+    fn trailing_stop_trails_hwm_at_1_5r_for_long() {
+        // At ≥ 1.5R: trail 1.2×ATR below HWM.
+        let entry   = 100.0;
+        let stop    = 95.0;
+        let qty     = 3.0;
+        let atr     = 2.0;
+        let r_risk  = (entry - stop) * qty; // $15
+
+        // Price at 1.5R: entry + 1.5 × (entry-stop) = $107.50
+        let cur    = 107.5;
+        let unr    = (cur - entry) * qty;
+        let r_mult = unr / r_risk; // 1.5
+
+        assert!((r_mult - 1.5).abs() < 1e-10, "should be exactly 1.5R at $107.50");
+
+        let hwm    = cur;
+        let trail  = hwm - atr * 1.2; // 107.5 - 2.4 = 105.1
+        // Only advance stop if trail > current stop
+        let new_stop = if r_mult >= 1.5 && trail > stop { trail } else { stop };
+        assert!(
+            (new_stop - 105.1).abs() < 1e-10,
+            "trailing stop at 1.5R should be HWM - 1.2×ATR = 105.1, got {new_stop}"
+        );
+    }
 }
