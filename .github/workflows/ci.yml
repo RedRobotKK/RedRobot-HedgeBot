@@ -36,10 +36,14 @@ jobs:
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          # Write key — echo preserves actual newlines from the secret value.
+          # Also strip any Windows-style \r that GitHub occasionally inserts.
+          echo "${{ secrets.VPS_SSH_KEY }}" | tr -d '\r' > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
+          # Verify the key loaded correctly before attempting any connections
+          ssh-keygen -l -f ~/.ssh/vps_key && echo "Key fingerprint OK" || { echo "ERROR: key file is invalid"; exit 1; }
           ssh-keyscan -H 165.232.160.43 >> ~/.ssh/known_hosts 2>/dev/null
-          echo "SSH key configured"
+          echo "SSH configured"
 
       # ── 3. Copy CI script to VPS and run it ───────────────────────────────
       # vps_ci_gate.sh runs cargo test / clippy / audit independently and
