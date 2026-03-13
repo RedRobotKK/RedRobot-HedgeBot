@@ -1370,11 +1370,13 @@ async fn close_paper_position(
     if let Some(idx) = idx {
         let pos = s.positions.remove(idx);
 
-        let current_value = pos.quantity * exit_price;
+        // P&L = price move × quantity  (same formula as unrealised_pnl and partial close)
+        // Using (exit - entry) * qty rather than (qty*exit - size_usd) because size_usd
+        // is margin only; with leverage>1 the latter inflates P&L dramatically.
         let trade_pnl = if pos.side == "LONG" {
-            current_value - pos.size_usd
+            (exit_price - pos.entry_price) * pos.quantity
         } else {
-            pos.size_usd - current_value
+            (pos.entry_price - exit_price) * pos.quantity
         };
 
         s.capital += pos.size_usd + trade_pnl;
