@@ -9,6 +9,7 @@ use tracing::{error, info, warn};
 use rand;
 
 /// Autonomous trading system state
+#[allow(dead_code)]
 pub struct AutonomousRunner {
     account_manager: Arc<AccountManager>,
     capital_manager: Arc<CapitalManager>,

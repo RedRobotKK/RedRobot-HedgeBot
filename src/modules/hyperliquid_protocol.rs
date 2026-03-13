@@ -94,6 +94,7 @@ struct HyperliquidResponse<T> {
 }
 
 /// Authenticated request payload for Hyperliquid
+#[allow(dead_code)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct AuthenticatedRequest {
     action: String,
@@ -769,6 +770,7 @@ impl HyperliquidClient {
     // ===== Private Helper Methods =====
 
     /// Send a request to the Hyperliquid API
+    #[allow(dead_code)]
     async fn send_request<T: for<'de> Deserialize<'de> + Default>(
         &self,
         payload: serde_json::Value,

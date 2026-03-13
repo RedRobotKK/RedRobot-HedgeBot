@@ -50,8 +50,8 @@ fn circuit_breaker_threshold_and_multiplier_reasonable() {
 fn long_pnl_with_leverage_equals_price_diff_times_qty() {
     // qty = margin × leverage / entry_price
     // pnl = (exit - entry) × qty   ← same formula used in close_paper_position
-    let entry    = 100.0;
-    let exit     = 110.0;  // +10%
+    let entry: f64 = 100.0;
+    let exit       = 110.0;  // +10%
     let margin   = 200.0;
     let leverage = 3.0;
     let qty      = margin * leverage / entry;  // 6.0 shares
@@ -65,8 +65,8 @@ fn long_pnl_with_leverage_equals_price_diff_times_qty() {
 
 #[test]
 fn short_pnl_with_leverage_equals_price_diff_times_qty() {
-    let entry    = 100.0;
-    let exit     = 90.0;   // price fell, SHORT wins
+    let entry: f64 = 100.0;
+    let exit       = 90.0;   // price fell, SHORT wins
     let margin   = 200.0;
     let leverage = 3.0;
     let qty      = margin * leverage / entry;  // 6.0 shares
@@ -83,10 +83,10 @@ fn pnl_pct_is_margin_relative_not_notional() {
     // The bot reports P&L% relative to margin committed, not notional.
     // With 3× leverage a 10% price move = 30% return on margin — correct
     // for a leveraged position where only margin is deployed.
-    let margin   = 100.0;
-    let leverage = 3.0;
-    let entry    = 100.0;
-    let exit     = 110.0;
+    let margin: f64 = 100.0;
+    let leverage     = 3.0;
+    let entry        = 100.0;
+    let exit         = 110.0;
     let qty      = margin * leverage / entry;
     let pnl      = (exit - entry) * qty;         // $30
     let pnl_pct  = pnl / margin * 100.0;         // 30%
@@ -101,8 +101,8 @@ fn pnl_pct_is_margin_relative_not_notional() {
 
 #[test]
 fn r_multiple_is_pnl_divided_by_entry_risk() {
-    let entry    = 100.0;
-    let stop     = 95.0;   // 5% distance
+    let entry: f64 = 100.0;
+    let stop       = 95.0;   // 5% distance
     let margin   = 100.0;
     let leverage = 3.0;
     let qty      = margin * leverage / entry;     // 3.0 shares
@@ -120,8 +120,8 @@ fn r_multiple_is_pnl_divided_by_entry_risk() {
 #[test]
 fn r_multiple_at_2r_triggers_first_partial() {
     // Partial-close rule: take 1/3 out when r_mult >= 2.0
-    let entry    = 100.0;
-    let stop     = 98.0;   // 2% stop
+    let entry: f64 = 100.0;
+    let stop       = 98.0;   // 2% stop
     let margin   = 100.0;
     let leverage = 3.0;
     let qty      = margin * leverage / entry;     // 3 shares
@@ -180,8 +180,8 @@ fn dca_max_2_addons_prevents_over_averaging() {
 
 #[test]
 fn partial_close_takes_one_third_of_position() {
-    let qty      = 9.0;
-    let size_usd = 900.0;
+    let qty: f64  = 9.0;
+    let size_usd  = 900.0;
     let close_qty  = qty / 3.0;
     let close_size = size_usd / 3.0;
     let remaining_qty  = qty - close_qty;
@@ -196,7 +196,7 @@ fn partial_close_takes_one_third_of_position() {
 #[test]
 fn partial_close_r_dollars_risked_scales_to_two_thirds() {
     // After 1/3 close, r_dollars_risked should scale by 2/3 to match remaining qty.
-    let original_r = 150.0;
+    let original_r: f64 = 150.0;
     let scaled_r   = original_r * (2.0 / 3.0);
     let expected_r = 100.0;
     assert!(
@@ -210,7 +210,7 @@ fn second_partial_after_first_covers_correct_fraction_of_original() {
     // Tranche 1 (at 2R): close 1/3 of original → 2/3 remain.
     // Tranche 2 (at 4R): close 1/3 of REMAINING (2/3 of original).
     // After both: 2/3 - (1/3 × 2/3) = 2/3 - 2/9 = 4/9 ≈ 44.4% remain.
-    let original_qty = 9.0;
+    let original_qty: f64 = 9.0;
 
     let after_t1 = original_qty - original_qty / 3.0;  // 6.0
     let after_t2 = after_t1 - after_t1 / 3.0;          // 4.0
@@ -250,7 +250,7 @@ fn trailing_stop_breakeven_not_triggered_before_1r() {
 
 #[test]
 fn trailing_stop_atr_trail_at_1_5r_for_long() {
-    let hwm   = 107.5; // high water mark at 1.5R
+    let hwm: f64 = 107.5; // high water mark at 1.5R
     let atr   = 2.0;
     let stop  = 100.0; // at breakeven already
     let r_mult = 1.5;
@@ -266,8 +266,8 @@ fn trailing_stop_atr_trail_at_1_5r_for_long() {
 
 #[test]
 fn trailing_stop_atr_trail_never_moves_backward() {
-    let hwm = 107.5;
-    let atr = 2.0;
+    let hwm: f64     = 107.5;
+    let atr          = 2.0;
     let current_stop = 104.0;
 
     let trail = hwm - atr * 1.2;  // 105.1 > 104.0 → advance

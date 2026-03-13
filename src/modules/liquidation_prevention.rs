@@ -4,6 +4,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Liquidation monitoring and prevention
+#[allow(dead_code)]
 pub struct LiquidationPrevention {
     warning_threshold: f64,
     critical_threshold: f64,

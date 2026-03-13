@@ -10,10 +10,9 @@
 /// Pure functions are called via the crate's public API so these tests act as
 /// a live smoke test for any refactoring.
 
-use std::collections::HashMap;
-
 // ── Inline helpers (no crate imports needed for pure functions) ───────────────
 
+#[allow(dead_code)]
 fn make_candle(close: f64, i: usize) -> PriceData {
     PriceData {
         symbol:    "TEST".to_string(),
@@ -26,6 +25,7 @@ fn make_candle(close: f64, i: usize) -> PriceData {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct PriceData {
     symbol:    String,

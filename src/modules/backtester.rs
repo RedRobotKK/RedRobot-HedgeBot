@@ -172,6 +172,7 @@ pub struct BacktestResults {
 }
 
 /// Backtester engine
+#[allow(dead_code)]
 pub struct Backtester {
     config: BacktestConfig,
     data: HashMap<String, Vec<OHLCV>>,
