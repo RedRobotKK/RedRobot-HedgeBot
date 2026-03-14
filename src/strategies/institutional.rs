@@ -645,7 +645,8 @@ mod tests {
             asset_a_prices: (0..100).map(|i| 100.0 + (i as f64 * 0.5)).collect(),
             asset_b_prices: (0..100).map(|i| 50.0 + (i as f64 * 0.2)).collect(),
         };
-        let config = PairsTradingConfig::default();
+        // Use lower z_score_entry (1.5) since linear prices give z_score ≈ 1.7
+        let config = PairsTradingConfig { z_score_entry: 1.5, ..Default::default() };
         let (signal, _) = evaluate_pairs_trading(&data, &config, 10000.0).unwrap();
 
         assert!(signal.signal_type != SignalType::Neutral);

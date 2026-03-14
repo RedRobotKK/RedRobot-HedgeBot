@@ -348,7 +348,7 @@ mod tests {
         assert!(metrics_safe.can_trade()); // health_factor = 3.33
 
         let metrics_warning = HealthMetrics::new("acc2".to_string(), 1700.0, 1000.0);
-        assert!(!metrics_warning.can_trade()); // health_factor = 1.7, but need > 1.5
+        assert!(metrics_warning.can_trade()); // health_factor = 1.7 > 1.5 threshold → CAN trade
 
         let metrics_critical = HealthMetrics::new("acc3".to_string(), 1300.0, 1000.0);
         assert!(!metrics_critical.can_trade()); // health_factor = 1.3
@@ -359,7 +359,7 @@ mod tests {
         let mut account = TradingAccount::default();
         let original_updated = account.updated_at;
 
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(1100)); // timestamp() is seconds-precision
         account.touch();
 
         assert!(account.updated_at > original_updated);

@@ -300,13 +300,13 @@ mod tests {
     #[test]
     fn test_capital_staging() {
         let default = CapitalStaging::default_dca();
-        assert_eq!(default.total_deployed(), 1.0);
+        assert!((default.total_deployed() - 1.0).abs() < 1e-10);
 
         let conservative = CapitalStaging::conservative();
-        assert_eq!(conservative.total_deployed(), 1.0);
+        assert!((conservative.total_deployed() - 1.0).abs() < 1e-10);
 
         let aggressive = CapitalStaging::aggressive();
-        assert_eq!(aggressive.total_deployed(), 1.0);
+        assert!((aggressive.total_deployed() - 1.0).abs() < 1e-10);
     }
 
     #[test]

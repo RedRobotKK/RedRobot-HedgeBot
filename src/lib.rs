@@ -130,8 +130,8 @@ mod integration_tests {
         assert_eq!(manager.total_account_count(), 5);
         assert_eq!(manager.active_account_count(), 5);
 
-        // Verify capital allocation sums to 1.0
-        assert_eq!(manager.total_capital_allocated(), 1.0);
+        // Verify capital allocation sums to 1.0 (epsilon comparison for float precision)
+        assert!((manager.total_capital_allocated() - 1.0).abs() < 1e-10);
 
         // Verify each purpose has correct account
         assert_eq!(

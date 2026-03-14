@@ -1115,7 +1115,7 @@ mod tests {
 
     #[test]
     fn test_routing_strategy_enum() {
-        let strategies = vec![
+        let strategies = [
             RoutingStrategy::BestPrice,
             RoutingStrategy::MinSlippage,
             RoutingStrategy::SmartRouting,

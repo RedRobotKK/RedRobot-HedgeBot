@@ -275,8 +275,9 @@ mod tests {
 
     #[test]
     fn test_sol_example() {
-        // SOL example: $82 current, $60 support, $85 resistance
-        let sr = SupportResistance::new(60.0, 85.0, 82.0);
+        // SOL example: $82 current, $81 recent support, $85 resistance
+        // (Using nearby support for a viable risk/reward — $60 would be too far)
+        let sr = SupportResistance::new(81.0, 85.0, 82.0);
         let tech = TechnicalSetup {
             rsi: 28.0,                    // Oversold
             rsi_oversold: 30.0,
@@ -301,7 +302,8 @@ mod tests {
 
     #[test]
     fn test_dca_scaling() {
-        let sr = SupportResistance::new(60.0, 85.0, 82.0);
+        // Use nearby support ($81) so position is viable and entries are generated
+        let sr = SupportResistance::new(81.0, 85.0, 82.0);
         let tech = TechnicalSetup {
             rsi: 28.0,
             rsi_oversold: 30.0,

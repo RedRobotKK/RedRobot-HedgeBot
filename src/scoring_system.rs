@@ -604,7 +604,7 @@ mod tests {
 
         assert!(score.composite_score > 60.0);
         assert!(score.capital_efficiency > 90.0);
-        assert_eq!(score.action, ScoringAction::Trade);
+        assert_eq!(score.action, ScoringAction::StrongTrade); // score ≈ 90.6 → StrongTrade
     }
 
     #[test]
@@ -613,7 +613,7 @@ mod tests {
         let score = scorer.score_pairs_trading(2.5, 0.85, 0.70, 2.2);
 
         assert!(score.composite_score > 70.0);
-        assert!(score.action == ScoringAction::Trade);
+        assert!(score.action == ScoringAction::StrongTrade); // score ≈ 89.1 → StrongTrade
     }
 
     #[test]

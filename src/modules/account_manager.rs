@@ -480,7 +480,7 @@ mod tests {
 
         manager.register_account(account).unwrap();
 
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(1100)); // timestamp() is seconds-precision
         manager.set_leverage("ts", 50.0).unwrap();
 
         let updated_account = manager.get_account("ts").unwrap();

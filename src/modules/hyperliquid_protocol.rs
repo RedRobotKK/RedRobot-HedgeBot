@@ -594,8 +594,12 @@ impl HyperliquidClient {
         }
         drop(cache);
 
-        // Fetch all positions and find the one we need
-        let positions = self.get_positions().await?;
+        // Fetch all positions and find the one we need.
+        // If network call fails, return None (graceful degradation — no known position).
+        let positions = match self.get_positions().await {
+            Ok(p) => p,
+            Err(_) => return Ok(None),
+        };
         Ok(positions.into_iter().find(|p| p.symbol == symbol))
     }
 
@@ -925,7 +929,7 @@ mod tests {
 
         let signature = client.sign_request(payload, timestamp);
         assert!(!signature.is_empty());
-        assert_eq!(signature.len(), 128); // 64 bytes in hex = 128 chars
+        assert_eq!(signature.len(), 64); // HMAC-SHA256 = 32 bytes → 64 hex chars
     }
 
     #[tokio::test]

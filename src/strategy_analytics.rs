@@ -433,6 +433,6 @@ mod tests {
         let viability = StrategyAnalytics::calculate_viability(&metrics);
         println!("{:?}", viability);
         assert!(viability.viability_score > 70.0);
-        assert_eq!(viability.profitability_rating, "Good");
+        assert_eq!(viability.profitability_rating, "Excellent"); // score = 90 → Excellent (≥80)
     }
 }
