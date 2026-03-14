@@ -166,7 +166,7 @@ fn test_dynamic_sizing_theory_validation() {
         initial_capital,
         max_position_pct: 0.25,
         max_leverage: 10.0,
-        daily_loss_limit: initial_capital * 0.05,
+        daily_loss_limit: initial_capital * 0.20, // Allow multiple DCA-like entries in one day
         slippage_pct: 0.0005,
     };
 
