@@ -1,0 +1,209 @@
+{
+  "schema_version": "1.0",
+  "meta": {
+    "run_at": "2026-03-14T06:00:43Z",
+    "commit": "10982ea",
+    "commit_full": "10982ea612fa2267bc5402304aec96f62dda1cb2",
+    "commit_message": "fix: signal_feed_test.rs \u2014 empty doc line + manual range check (Run #21)",
+    "branch": "master",
+    "overall_status": "FAILED",
+    "triggered_by": "push"
+  },
+  "environment": {
+    "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
+    "cargo": "cargo 1.93.1 (083ac5135 2025-12-15)",
+    "os_kernel": "6.8.0-101-generic",
+    "arch": "x86_64",
+    "ram_total": "961Mi",
+    "swap_active": true
+  },
+  "steps": {
+    "tests": {
+      "status": "FAILED",
+      "exit_code": 101,
+      "duration_seconds": 7,
+      "total_passed": 0,
+      "total_failed": 0,
+      "total_ignored": 0,
+      "failures": []
+    },
+    "clippy": {
+      "status": "FAILED",
+      "exit_code": 101,
+      "duration_seconds": 9,
+      "error_count": 20,
+      "errors": [
+        {
+          "code": "E",
+          "message": "method `coin_count` is never used",
+          "file": "src/sentiment.rs",
+          "line": 236,
+          "col": 18
+        },
+        {
+          "code": "E",
+          "message": "field `symbol` is never read",
+          "file": "src/funding.rs",
+          "line": 42,
+          "col": 9
+        },
+        {
+          "code": "E",
+          "message": "method `annualised_pct` is never used",
+          "file": "src/funding.rs",
+          "line": 55,
+          "col": 12
+        },
+        {
+          "code": "E",
+          "message": "method `ts` is never used",
+          "file": "src/trade_log.rs",
+          "line": 225,
+          "col": 12
+        },
+        {
+          "code": "E",
+          "message": "method `yesterday_log_path` is never used",
+          "file": "src/trade_log.rs",
+          "line": 369,
+          "col": 12
+        },
+        {
+          "code": "E",
+          "message": "struct `ClaudeRequest` is never constructed",
+          "file": "src/daily_analyst.rs",
+          "line": 44,
+          "col": 8
+        },
+        {
+          "code": "E",
+          "message": "struct `ClaudeMessage` is never constructed",
+          "file": "src/daily_analyst.rs",
+          "line": 52,
+          "col": 8
+        },
+        {
+          "code": "E",
+          "message": "fields `symbol`, `side`, `price`, `stop_loss`, and `size_usd` are never read",
+          "file": "src/daily_analyst.rs",
+          "line": 380,
+          "col": 5
+        },
+        {
+          "code": "E",
+          "message": "doc quote line without `>` marker",
+          "file": "src/indicators.rs",
+          "line": 79,
+          "col": 9
+        },
+        {
+          "code": "E",
+          "message": "doc quote line without `>` marker",
+          "file": "src/indicators.rs",
+          "line": 80,
+          "col": 9
+        },
+        {
+          "code": "E",
+          "message": "doc quote line without `>` marker",
+          "file": "src/indicators.rs",
+          "line": 301,
+          "col": 5
+        },
+        {
+          "code": "E",
+          "message": "doc quote line without `>` marker",
+          "file": "src/indicators.rs",
+          "line": 302,
+          "col": 5
+        },
+        {
+          "code": "E",
+          "message": "doc quote line without `>` marker",
+          "file": "src/indicators.rs",
+          "line": 401,
+          "col": 5
+        },
+        {
+          "code": "E",
+          "message": "doc quote line without `>` marker",
+          "file": "src/indicators.rs",
+          "line": 402,
+          "col": 5
+        },
+        {
+          "code": "E",
+          "message": "this `if` has identical blocks",
+          "file": "src/decision.rs",
+          "line": 209,
+          "col": 52
+        },
+        {
+          "code": "E",
+          "message": "this function has too many arguments (8/7)",
+          "file": "src/decision.rs",
+          "line": 228,
+          "col": 1
+        },
+        {
+          "code": "E",
+          "message": "manual `!RangeInclusive::contains` implementation",
+          "file": "src/decision.rs",
+          "line": 283,
+          "col": 30
+        },
+        {
+          "code": "E",
+          "message": "clamp-like pattern without using clamp function",
+          "file": "src/learner.rs",
+          "line": 189,
+          "col": 18
+        },
+        {
+          "code": "E",
+          "message": "clamp-like pattern without using clamp function",
+          "file": "src/learner.rs",
+          "line": 193,
+          "col": 22
+        },
+        {
+          "code": "E",
+          "message": "clamp-like pattern without using clamp function",
+          "file": "src/learner.rs",
+          "line": 196,
+          "col": 29
+        }
+      ]
+    },
+    "audit": {
+      "status": "PASSED",
+      "exit_code": 0,
+      "duration_seconds": 3,
+      "vulnerability_count": 2,
+      "vulnerabilities": [
+        {
+          "id": "RUSTSEC-2021-0141",
+          "url": "https://rustsec.org/advisories/RUSTSEC-2021-0141",
+          "crate": "rustls-pemfile",
+          "version": "1.0.4",
+          "title": "rustls-pemfile is unmaintained"
+        },
+        {
+          "id": "RUSTSEC-2025-0134",
+          "url": "https://rustsec.org/advisories/RUSTSEC-2025-0134",
+          "crate": "wasm-bindgen",
+          "version": "0.2.111"
+        }
+      ]
+    }
+  },
+  "service": {
+    "name": "hedgebot",
+    "status": "active",
+    "active_since": "Thu 2026-03-12 07:15:10 UTC",
+    "recent_logs": [
+      "Mar 12 07:15:10 ubuntu-s-1vcpu-1gb-sgp1-01 systemd[1]: Started hedgebot.service - RedRobot HedgeBot.",
+      "Mar 12 07:15:13 ubuntu-s-1vcpu-1gb-sgp1-01 redrobot-hedgebot[217810]: [2026-03-12T07:15:13.533Z ERROR redrobot_hedgebot] Dashboard: Address already in use (os error 98)"
+    ]
+  }
+}
