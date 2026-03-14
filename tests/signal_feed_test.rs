@@ -9,7 +9,6 @@
 ///
 /// Pure functions are called via the crate's public API so these tests act as
 /// a live smoke test for any refactoring.
-
 // ── Inline helpers (no crate imports needed for pure functions) ───────────────
 
 #[allow(dead_code)]
@@ -458,7 +457,7 @@ fn confidence_formula_always_in_0_to_1() {
     for (bull, bear) in [(0.0_f64, 0.0), (1.0, 0.0), (0.0, 1.0), (0.5, 0.5), (0.3, 0.9)] {
         let eps = 1e-8;
         let conf = f64::max(bull, bear) / (bull + bear + eps);
-        assert!(conf >= 0.0 && conf <= 1.0,
+        assert!((0.0..=1.0).contains(&conf),
             "confidence out of [0,1]: bull={bull}, bear={bear}, conf={conf}");
     }
 }
