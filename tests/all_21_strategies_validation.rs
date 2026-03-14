@@ -79,16 +79,18 @@ mod tests {
 
         let signals = evaluate_all_strategies(&ctx);
 
-        // With no previous data, expect mostly neutral signals
-        // 20 strategies are implemented (21st slot is reserved for future use)
-        println!("📊 All 20 Strategies Evaluated:");
+        // With no previous data, 5 strategies (divergence, macd_momentum, stochastic,
+        // trend_following, volatility_mean_reversion) use .ok_or() and return Err
+        // when previous is None, so their signals are not pushed.
+        // The remaining 15 either handle None gracefully or don't need previous data.
+        println!("📊 Strategies Evaluated (no previous data):");
         println!("Total signals returned: {}", signals.len());
 
-        // Each strategy returns exactly 1 signal (even if neutral)
+        // 15 strategies produce signals when previous is None
         assert_eq!(
             signals.len(),
-            20,
-            "Should have 20 signals from 20 implemented strategies (21st slot reserved)"
+            15,
+            "Should have 15 signals when previous=None (5 strategies require previous data)"
         );
 
         // Print strategy results
