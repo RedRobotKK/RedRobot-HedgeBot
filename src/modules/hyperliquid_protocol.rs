@@ -162,7 +162,7 @@ impl HyperliquidClient {
     }
 
     /// Get current timestamp in milliseconds
-    fn current_timestamp_ms() -> u64 {
+    pub fn current_timestamp_ms() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
