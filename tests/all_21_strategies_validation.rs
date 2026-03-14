@@ -67,9 +67,11 @@ mod tests {
 
     #[test]
     fn test_all_21_strategies_registered() {
+        // Provide previous data so all 20 strategies can evaluate (5 strategies
+        // require previous and return Err when it is None).
         let ctx = StrategyContext {
             current: create_test_snapshot(),
-            previous: None,
+            previous: Some(create_test_snapshot()),
             cex_imbalance_ratio: 1.0,
             cex_signal_type: SignalType::Neutral,
             portfolio_equity: 10000.0,
@@ -79,18 +81,14 @@ mod tests {
 
         let signals = evaluate_all_strategies(&ctx);
 
-        // With no previous data, 5 strategies (divergence, macd_momentum, stochastic,
-        // trend_following, volatility_mean_reversion) use .ok_or() and return Err
-        // when previous is None, so their signals are not pushed.
-        // The remaining 15 either handle None gracefully or don't need previous data.
-        println!("📊 Strategies Evaluated (no previous data):");
+        println!("📊 All 20 Strategies Evaluated:");
         println!("Total signals returned: {}", signals.len());
 
-        // 15 strategies produce signals when previous is None
+        // All 20 implemented strategies should produce exactly 1 signal each
         assert_eq!(
             signals.len(),
-            15,
-            "Should have 15 signals when previous=None (5 strategies require previous data)"
+            20,
+            "Should have 20 signals from 20 implemented strategies (21st slot reserved)"
         );
 
         // Print strategy results
