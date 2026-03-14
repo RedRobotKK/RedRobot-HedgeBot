@@ -1,0 +1,188 @@
+{
+  "schema_version": "1.0",
+  "meta": {
+    "run_at": "2026-03-14T09:04:29Z",
+    "commit": "65dce9d",
+    "commit_full": "65dce9da0aaefba524ad2392af3865eb7687b042",
+    "commit_message": "fix: E0689 float type ambiguity in test functions + unused import (Run #25)",
+    "branch": "master",
+    "overall_status": "FAILED",
+    "triggered_by": "push"
+  },
+  "environment": {
+    "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
+    "cargo": "cargo 1.93.1 (083ac5135 2025-12-15)",
+    "os_kernel": "6.8.0-101-generic",
+    "arch": "x86_64",
+    "ram_total": "961Mi",
+    "swap_active": true
+  },
+  "steps": {
+    "tests": {
+      "status": "FAILED",
+      "exit_code": 101,
+      "duration_seconds": 25,
+      "total_passed": 0,
+      "total_failed": 0,
+      "total_ignored": 0,
+      "failures": []
+    },
+    "clippy": {
+      "status": "FAILED",
+      "exit_code": 101,
+      "duration_seconds": 12,
+      "error_count": 17,
+      "errors": [
+        {
+          "code": "E",
+          "message": "manual `RangeInclusive::contains` implementation",
+          "file": "src/indicators.rs",
+          "line": 544,
+          "col": 17
+        },
+        {
+          "code": "E",
+          "message": "manual `RangeInclusive::contains` implementation",
+          "file": "src/indicators.rs",
+          "line": 651,
+          "col": 17
+        },
+        {
+          "code": "E",
+          "message": "clamp-like pattern without using clamp function",
+          "file": "src/learner.rs",
+          "line": 197,
+          "col": 29
+        },
+        {
+          "code": "E",
+          "message": "clamp-like pattern without using clamp function",
+          "file": "src/learner.rs",
+          "line": 198,
+          "col": 29
+        },
+        {
+          "code": "E",
+          "message": "clamp-like pattern without using clamp function",
+          "file": "src/learner.rs",
+          "line": 199,
+          "col": 29
+        },
+        {
+          "code": "E",
+          "message": "field assignment outside of initializer for an instance created with Default::default()",
+          "file": "src/learner.rs",
+          "line": 339,
+          "col": 9
+        },
+        {
+          "code": "E",
+          "message": "field assignment outside of initializer for an instance created with Default::default()",
+          "file": "src/learner.rs",
+          "line": 427,
+          "col": 9
+        },
+        {
+          "code": "E",
+          "message": "this multiplication by -1 can be written more succinctly",
+          "file": "src/chart_patterns.rs",
+          "line": 423,
+          "col": 19
+        },
+        {
+          "code": "E",
+          "message": "manual implementation of an assign operation",
+          "file": "src/daily_analyst.rs",
+          "line": 339,
+          "col": 38
+        },
+        {
+          "code": "E",
+          "message": "this function has too many arguments (11/7)",
+          "file": "src/main.rs",
+          "line": 250,
+          "col": 1
+        },
+        {
+          "code": "E",
+          "message": "wildcard pattern covers any other pattern as it will match anyway",
+          "file": "src/main.rs",
+          "line": 725,
+          "col": 13
+        },
+        {
+          "code": "E",
+          "message": "this function has too many arguments (13/7)",
+          "file": "src/main.rs",
+          "line": 759,
+          "col": 1
+        },
+        {
+          "code": "E",
+          "message": "this `if` has identical blocks",
+          "file": "src/main.rs",
+          "line": 1227,
+          "col": 90
+        },
+        {
+          "code": "E",
+          "message": "field assignment outside of initializer for an instance created with Default::default()",
+          "file": "src/main.rs",
+          "line": 1816,
+          "col": 9
+        },
+        {
+          "code": "E",
+          "message": "useless use of `vec!`",
+          "file": "src/web_dashboard.rs",
+          "line": 1164,
+          "col": 26
+        },
+        {
+          "code": "E",
+          "message": "useless use of `vec!`",
+          "file": "src/web_dashboard.rs",
+          "line": 1176,
+          "col": 26
+        },
+        {
+          "code": "E",
+          "message": "could not compile `redrobot-hedgebot` (bin \"redrobot-hedgebot\" test) due to 16 previous errors"
+        }
+      ]
+    },
+    "audit": {
+      "status": "PASSED",
+      "exit_code": 0,
+      "duration_seconds": 3,
+      "vulnerability_count": 2,
+      "vulnerabilities": [
+        {
+          "id": "RUSTSEC-2021-0141",
+          "url": "https://rustsec.org/advisories/RUSTSEC-2021-0141",
+          "crate": "rustls-pemfile",
+          "version": "1.0.4",
+          "title": "rustls-pemfile is unmaintained"
+        },
+        {
+          "id": "RUSTSEC-2025-0134",
+          "url": "https://rustsec.org/advisories/RUSTSEC-2025-0134",
+          "crate": "wasm-bindgen",
+          "version": "0.2.111"
+        }
+      ]
+    }
+  },
+  "service": {
+    "name": "hedgebot",
+    "status": "active",
+    "active_since": "Thu 2026-03-12 07:15:10 UTC",
+    "recent_logs": [
+      "Mar 14 07:06:05 ubuntu-s-1vcpu-1gb-sgp1-01 redrobot-hedgebot[217810]: [2026-03-14T07:06:05.446Z ERROR redrobot_hedgebot] Cycle error: Hyperliquid allMids returned HTTP 502 Bad Gateway",
+      "Mar 14 07:06:16 ubuntu-s-1vcpu-1gb-sgp1-01 redrobot-hedgebot[217810]: [2026-03-14T07:06:16.561Z ERROR redrobot_hedgebot] Cycle error: Hyperliquid allMids returned HTTP 502 Bad Gateway",
+      "Mar 14 07:06:27 ubuntu-s-1vcpu-1gb-sgp1-01 redrobot-hedgebot[217810]: [2026-03-14T07:06:27.675Z ERROR redrobot_hedgebot] Cycle error: Hyperliquid allMids returned HTTP 502 Bad Gateway",
+      "Mar 14 07:06:38 ubuntu-s-1vcpu-1gb-sgp1-01 redrobot-hedgebot[217810]: [2026-03-14T07:06:38.789Z ERROR redrobot_hedgebot] Cycle error: Hyperliquid allMids returned HTTP 502 Bad Gateway",
+      "Mar 14 07:06:49 ubuntu-s-1vcpu-1gb-sgp1-01 redrobot-hedgebot[217810]: [2026-03-14T07:06:49.902Z ERROR redrobot_hedgebot] Cycle error: Hyperliquid allMids returned HTTP 502 Bad Gateway"
+    ]
+  }
+}
