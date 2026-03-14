@@ -596,16 +596,19 @@ async fn run_cycle(
     // ── Tier 2: analyse candidates ────────────────────────────────────────
     let total = candidates.len();
     let mut new_decisions: Vec<DecisionInfo> = Vec::new();
+    // Collect per-symbol indicator snapshots to batch-update CandidateInfo at end of cycle.
+    let mut cand_indicators: Vec<(String, f64, &'static str, f64)> = Vec::new(); // (sym, rsi, regime, atr_pct)
 
     for (i, sym) in candidates.iter().enumerate() {
         set_status(bot_state,
             &format!("🔬 Analysing {}/{}: {}…", i + 1, total, sym)).await;
 
         match analyse_symbol(sym, market, hl, db, config, bot_state, weights, sent_cache, fund_cache, btc_dom, btc_ret_24h, btc_ret_4h, trade_logger).await {
-            Ok(Some(dec)) => {
+            Ok(Some((dec, ind))) => {
                 if dec.action != "SKIP" {
                     info!("💡 {} → {} conf={:.0}%", sym, dec.action, dec.confidence * 100.0);
                 }
+                cand_indicators.push((sym.clone(), ind.rsi, ind.regime, ind.atr_pct));
                 // Push ALL decisions (including SKIPs) so the signal feed always shows activity.
                 // SKIPs are rendered dimmed in the dashboard; BUY/SELL get the coloured treatment.
                 new_decisions.push(DecisionInfo {
@@ -625,6 +628,14 @@ async fn run_cycle(
 
     {
         let mut s = bot_state.write().await;
+        // Write RSI / regime / ATR% back into the candidate list for the dashboard.
+        for (sym, rsi, regime, atr_pct) in &cand_indicators {
+            if let Some(c) = s.candidates.iter_mut().find(|c| c.symbol == *sym) {
+                c.rsi     = Some(*rsi);
+                c.regime  = Some(regime.to_string());
+                c.atr_pct = Some(*atr_pct);
+            }
+        }
         s.recent_decisions.extend(new_decisions);
         // Keep at most 100 entries (20 decisions × 5 cycles of history).
         // The dashboard shows the 20 most recent, so older ones are just trimmed.
@@ -817,8 +828,16 @@ async fn apply_ai_review(
 ///   6. If paper mode and action ≠ SKIP → `execute_paper_trade()`.
 ///      If live mode → `risk::should_trade()` gate → `hl.place_order()`.
 ///
-/// Returns `Ok(Some(Decision))` even for SKIP decisions so the dashboard can
-/// show them; returns `Ok(None)` when candle data is insufficient.
+/// Indicator snapshot returned alongside a Decision so the candidates table
+/// can display live RSI / regime / ATR% without a second lock cycle.
+struct SymbolIndicators {
+    rsi:     f64,
+    regime:  &'static str,   // "Trending" | "Neutral" | "Ranging"
+    atr_pct: f64,            // ATR(14) as % of price
+}
+
+/// Returns `Ok(Some((Decision, SymbolIndicators)))` even for SKIP decisions so
+/// the dashboard can show them; returns `Ok(None)` when candle data is insufficient.
 #[allow(clippy::too_many_arguments)]
 async fn analyse_symbol(
     symbol:       &str,
@@ -834,7 +853,7 @@ async fn analyse_symbol(
     btc_ret_24h:  f64,   // BTC 24h return %
     btc_ret_4h:   f64,   // BTC 4h return % (for relative performance signal)
     trade_logger: &SharedTradeLogger,
-) -> Result<Option<decision::Decision>> {
+) -> Result<Option<(decision::Decision, SymbolIndicators)>> {
     let candles = market.fetch_market_data(symbol).await?;
     if candles.len() < 26 { return Ok(None); }
 
@@ -936,7 +955,14 @@ async fn analyse_symbol(
         }
     }
 
-    Ok(Some(dec))
+    let current_price = candles.last().map_or(1.0, |c| c.close);
+    let ind_snapshot = SymbolIndicators {
+        rsi:     ind.rsi,
+        regime:  regime_str,
+        atr_pct: if ind.atr > 0.0 && current_price > 0.0 { ind.atr / current_price * 100.0 } else { 0.0 },
+    };
+
+    Ok(Some((dec, ind_snapshot)))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1424,6 +1450,18 @@ async fn take_partial(
         info!("💰 {}R PARTIAL {} {} @ ${:.4}  P&L {:+.2} ({:+.1}%)  [⅓ closed]",
             if tranche == 1 { 2 } else { 4 }, side, symbol, exit_price, trade_pnl, pnl_pct);
 
+        let partial_breakdown = Some(format!(
+            "<div style='font-size:.78em;padding:4px 0;line-height:1.7'>\
+             <div>Partial close ⅓ at <b>{lbl}</b> target &nbsp;·&nbsp; \
+             entry <b>${entry:.4}</b> → <b>${exit:.4}</b></div>\
+             <div style='color:#8b949e'>Locked in <b style='color:#3fb950'>{pnl:+.2}</b> \
+             ({pct:+.1}%) on this tranche</div></div>",
+            lbl   = r_label,
+            entry = entry,
+            exit  = exit_price,
+            pnl   = trade_pnl,
+            pct   = pnl_pct,
+        ));
         s.closed_trades.push(ClosedTrade {
             symbol:    symbol.clone(),
             side,
@@ -1433,6 +1471,7 @@ async fn take_partial(
             pnl_pct,
             reason:    format!("Partial{}R", r_label),
             closed_at: now_str(),
+            breakdown: partial_breakdown,
         });
         let len = s.closed_trades.len();
         if len > 100 { s.closed_trades.drain(0..len - 100); }
@@ -1501,6 +1540,53 @@ async fn close_paper_position(
         info!("📝 CLOSE {} {} @ ${:.4} → {:+.2} ({:+.1}% / {:.2}R) [{}]",
             pos.side, symbol, exit_price, trade_pnl, pnl_pct, r_at_close, reason);
 
+        // ── Build verbose breakdown for the click-to-expand dashboard row ────────
+        let hold_mins = pos.cycles_held / 2;
+        let hold_str  = if hold_mins < 60 { format!("{}m", hold_mins) }
+                        else { format!("{:.1}h", hold_mins as f64 / 60.0) };
+        let c = &pos.contrib;
+        let sig_flags: String = [
+            ("RSI",   c.rsi_bullish),
+            ("BB",    c.bb_bullish),
+            ("MACD",  c.macd_bullish),
+            ("Trend", c.trend_bullish),
+            ("OF",    c.of_bullish),
+        ].iter().map(|(name, bull)| {
+            let col = if *bull { "#3fb950" } else { "#f85149" };
+            let arrow = if *bull { "↑" } else { "↓" };
+            format!("<span style='color:{col}'>{name}{arrow}</span>")
+        }).collect::<Vec<_>>().join(" ");
+        let ai_line = match (&pos.ai_action, &pos.ai_reason) {
+            (Some(act), Some(rsn)) => format!(
+                "<div style='margin-top:4px'>🤖 <b style='color:#e3b341'>AI {}</b>: <span style='color:#cdd9e5'>{rsn}</span></div>",
+                act.replace('_', " ").to_uppercase()
+            ),
+            _ => String::new(),
+        };
+        let breakdown = Some(format!(
+            "<div style='font-size:.78em;padding:4px 0;line-height:1.7'>\
+             <div><b>{side}</b> entry <b>${entry:.4}</b> → exit <b>${exit:.4}</b> \
+             &nbsp;·&nbsp; held <b>{hold}</b> \
+             &nbsp;·&nbsp; result <b style='color:{rc}'>{r:+.2}R</b></div>\
+             <div style='color:#8b949e'>Stop <span style='color:#f85149'>${stop:.4}</span> \
+             &nbsp;·&nbsp; TP <span style='color:#3fb950'>${tp:.4}</span> \
+             &nbsp;·&nbsp; margin <b>${size:.2}</b> · {lev:.1}× lev</div>\
+             <div style='margin-top:2px'>Signals at entry: {sigs}</div>\
+             {ai_ln}</div>",
+            side  = pos.side,
+            entry = pos.entry_price,
+            exit  = exit_price,
+            hold  = hold_str,
+            r     = r_at_close,
+            rc    = if r_at_close >= 0.0 { "#3fb950" } else { "#f85149" },
+            stop  = pos.stop_loss,
+            tp    = pos.take_profit,
+            size  = pos.size_usd,
+            lev   = pos.leverage,
+            sigs  = sig_flags,
+            ai_ln = ai_line,
+        ));
+
         s.closed_trades.push(ClosedTrade {
             symbol:    symbol.to_string(),
             side:      pos.side.clone(),
@@ -1510,6 +1596,7 @@ async fn close_paper_position(
             pnl_pct,
             reason:    reason.to_string(),
             closed_at: now_str(),
+            breakdown,
         });
         let len = s.closed_trades.len();
         if len > 100 { s.closed_trades.drain(0..len - 100); }

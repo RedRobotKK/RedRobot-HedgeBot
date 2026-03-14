@@ -53,6 +53,9 @@ pub struct ClosedTrade {
     pub pnl_pct:    f64,
     pub reason:     String,   // "Signal" | "StopLoss" | "TakeProfit" | "Partial"
     pub closed_at:  String,
+    /// HTML snippet shown when user clicks the row — technicals + AI reasoning.
+    #[serde(default)]
+    pub breakdown:  Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +70,15 @@ pub struct CandidateInfo {
     pub bullish_percent: Option<f64>,
     /// LunarCrush alt_rank (lower = more social momentum)
     pub alt_rank:        Option<u32>,
+    /// RSI(14) value computed during signal analysis, None until first scan.
+    #[serde(default)]
+    pub rsi:             Option<f64>,
+    /// Market regime: "Trending" | "Neutral" | "Ranging", None until first scan.
+    #[serde(default)]
+    pub regime:          Option<String>,
+    /// ATR(14) as % of price — a volatility proxy, None until first scan.
+    #[serde(default)]
+    pub atr_pct:         Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -315,27 +327,48 @@ async fn dashboard_handler(State(state): State<SharedState>) -> Html<String> {
     let closed_rows: String = if s.closed_trades.is_empty() {
         r#"<tr><td colspan="7" class="empty-td">No closed trades yet</td></tr>"#.to_string()
     } else {
-        s.closed_trades.iter().rev().take(20).map(|t| {
+        s.closed_trades.iter().rev().take(20).enumerate().map(|(i, t)| {
             let pc = if t.pnl >= 0.0 { "#3fb950" } else { "#f85149" };
             let ps = if t.pnl >= 0.0 { "+" } else { "-" };
             let sc = if t.side == "LONG" { "#3fb950" } else { "#f85149" };
             let pnl_abs = t.pnl.abs();
             let pct_abs = t.pnl_pct.abs();
+            let row_id  = format!("ct-{i}");
+            let det_id  = format!("ct-det-{i}");
+            // Click-to-expand: show breakdown row if present, fallback to synthesised summary
+            let detail_html = t.breakdown.as_deref().unwrap_or("No detailed breakdown recorded for this trade.");
             format!(
-                "<tr><td><b>{}</b></td><td style='color:{}'>{}</td>\
-                 <td>${:.4}</td><td>${:.4}</td>\
-                 <td style='color:{}'>{}{:.2} ({}{:.1}%)</td>\
-                 <td class='reason-{}'>{}</td><td class='ts'>{}</td></tr>",
-                t.symbol, sc, t.side, t.entry, t.exit,
-                pc, ps, pnl_abs, ps, pct_abs,
-                reason_class(&t.reason), t.reason, t.closed_at
+                "<tr class='ct-row' style='cursor:pointer' onclick=\"toggleDetail('{det_id}')\" id='{row_id}'>\
+                 <td><b>{sym}</b> <span style='color:#444c56;font-size:.75em'>▼</span></td>\
+                 <td style='color:{sc}'>{side}</td>\
+                 <td>${entry:.4}</td><td>${exit:.4}</td>\
+                 <td style='color:{pc}'>{ps}{pnl:.2} ({ps}{pct:.1}%)</td>\
+                 <td class='reason-{rc}'>{reason}</td><td class='ts'>{ts}</td></tr>\
+                 <tr id='{det_id}' class='ct-detail' style='display:none'>\
+                 <td colspan='7' style='background:#161b22;padding:8px 12px;border-bottom:1px solid #30363d'>\
+                 {detail}</td></tr>",
+                det_id = det_id,
+                row_id = row_id,
+                sym    = t.symbol,
+                sc     = sc,
+                side   = t.side,
+                entry  = t.entry,
+                exit   = t.exit,
+                pc     = pc,
+                ps     = ps,
+                pnl    = pnl_abs,
+                pct    = pct_abs,
+                rc     = reason_class(&t.reason),
+                reason = t.reason,
+                ts     = t.closed_at,
+                detail = detail_html,
             )
         }).collect()
     };
 
     // ── Candidates table ──────────────────────────────────────────────────
     let cand_rows: String = if s.candidates.is_empty() {
-        r#"<tr><td colspan="3" class="empty-td">Scanning…</td></tr>"#.to_string()
+        r#"<tr><td colspan="4" class="empty-td">Scanning…</td></tr>"#.to_string()
     } else {
         s.candidates.iter().map(|c| {
             let chg_td = match c.change_pct {
@@ -353,17 +386,52 @@ async fn dashboard_handler(State(state): State<SharedState>) -> Html<String> {
             // Coin logo (16 px) next to ticker
             let c_logo = coins::coin_logo_img(&c.symbol, 16);
 
+            // Regime mini-badge: [T] trending (blue) / [R] ranging (yellow) / [N] neutral (grey)
+            let regime_badge = match c.regime.as_deref() {
+                Some("Trending") => "<span style='color:#58a6ff;font-size:.68em;background:#58a6ff18;\
+                    border:1px solid #58a6ff44;border-radius:3px;padding:0 3px;margin-left:3px'>T</span>",
+                Some("Ranging")  => "<span style='color:#e3b341;font-size:.68em;background:#e3b34118;\
+                    border:1px solid #e3b34144;border-radius:3px;padding:0 3px;margin-left:3px'>R</span>",
+                Some("Neutral")  => "<span style='color:#8b949e;font-size:.68em;background:#8b949e18;\
+                    border:1px solid #8b949e44;border-radius:3px;padding:0 3px;margin-left:3px'>N</span>",
+                _ => "",
+            };
+
+            // RSI cell: green <30 (oversold), red >70 (overbought), grey otherwise
+            let rsi_td = match c.rsi {
+                Some(r) => {
+                    let (rc, label) = if r < 30.0 { ("#3fb950", "OS") }  // oversold
+                                      else if r > 70.0 { ("#f85149", "OB") }  // overbought
+                                      else { ("#8b949e", "") };
+                    if label.is_empty() {
+                        format!("<td style='color:{rc}'>{r:.0}</td>")
+                    } else {
+                        format!("<td style='color:{rc}'>{r:.0} <span style='font-size:.72em'>{label}</span></td>")
+                    }
+                }
+                None => "<td style='color:var(--muted)'>—</td>".to_string(),
+            };
+
+            // ATR% cell: shows volatility in a neutral grey
+            let atr_td = match c.atr_pct {
+                Some(a) => format!("<td style='color:#8b949e'>{a:.2}%</td>"),
+                None    => "<td style='color:var(--muted)'>—</td>".to_string(),
+            };
+
             format!("<tr>\
-                       <td style='{ss}'>{logo}{sym}{dot}</td>\
+                       <td style='{ss}'>{logo}{sym}{dot}{rbadge}</td>\
                        <td>${price:.4}</td>\
                        {chg_td}\
+                       {rsi_td}\
                      </tr>",
-                ss     = sym_style,
-                logo   = c_logo,
-                sym    = c.symbol,
-                dot    = open_dot,
-                price  = c.price,
-                chg_td = chg_td,
+                ss      = sym_style,
+                logo    = c_logo,
+                sym     = c.symbol,
+                dot     = open_dot,
+                rbadge  = regime_badge,
+                price   = c.price,
+                chg_td  = chg_td,
+                rsi_td  = rsi_td,
             )
         }).collect()
     };
@@ -549,6 +617,9 @@ tr:hover td{{background:rgba(255,255,255,.03)}}
 .w-item-bar{{width:32px;height:3px;background:var(--border);border-radius:2px;overflow:hidden}}
 .w-item-fill{{height:3px;background:linear-gradient(90deg,#388bfd,#58a6ff);border-radius:2px}}
 .w-strip-note{{margin-left:auto;font-size:.65em;color:var(--muted);white-space:nowrap}}
+/* ── Closed trade expand ── */
+.ct-row:hover td{{background:rgba(255,255,255,.05)}}
+.ct-detail td{{color:var(--text)}}
 /* ── Utility ── */
 .g{{color:var(--green)}}.r{{color:var(--red)}}.b{{color:var(--blue)}}.y{{color:var(--yellow)}}
 </style></head><body>
@@ -625,7 +696,7 @@ tr:hover td{{background:rgba(255,255,255,.03)}}
     <span>Candidates <span class="badge">{cand_n} scanned · ● = open</span></span>
   </div>
   <div class="tbl-wrap">
-    <table><tr><th>Symbol</th><th>Price</th><th>Session Δ</th></tr>{cand_rows}</table>
+    <table><tr><th>Symbol</th><th>Price</th><th>Session Δ</th><th title="RSI(14): &lt;30 oversold · &gt;70 overbought">RSI</th></tr>{cand_rows}</table>
   </div>
   {wh}
 </div>
@@ -639,6 +710,19 @@ tr:hover td{{background:rgba(255,255,255,.03)}}
 </div>
 
 <script>
+/* ── Closed trade click-to-expand ─────────────────────────────────────── */
+function toggleDetail(id){{
+  var el=document.getElementById(id);
+  if(!el)return;
+  var open=el.style.display!=='none';
+  el.style.display=open?'none':'table-row';
+  /* flip the ▼ arrow in the parent row */
+  var row=el.previousElementSibling;
+  if(row){{
+    var arrow=row.querySelector('span[style*="444c56"]');
+    if(arrow)arrow.textContent=open?'▼':'▲';
+  }}
+}}
 (function(){{
   /* ── Countdown to next cycle (real timer from server next_cycle_at) ──── */
   var nextAt={next_cycle_at_ms},el=document.getElementById('cntdn');
