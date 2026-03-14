@@ -507,19 +507,13 @@ async fn run_cycle(
     }
 
     // ── Update dashboard candidate list & weights mirror ─────────────────
-    // Step 1: fetch sentiment for all candidates WITHOUT holding the state lock
-    // (cache is in-memory so this is fast; network calls only happen on refresh)
-    let mut cand_sentiment: HashMap<String, Option<sentiment::SentimentData>> = HashMap::new();
-    for sym in &candidates {
-        let sent = sent_cache.get(sym).await;
-        cand_sentiment.insert(sym.clone(), sent);
-    }
-    // Step 2: build CandidateInfo and push to state under a single lock
+    // Build CandidateInfo and push to state under a single lock.
+    // rsi/regime/atr_pct are filled in later by the per-symbol analysis loop.
     {
         let session_snap = bot_state.read().await.session_prices.clone();
         let cand_infos: Vec<CandidateInfo> = candidates.iter().filter_map(|sym| {
             let &price = current_mids.get(sym.as_str())?;
-            // cycle 1: prev_snapshot is empty (no previous prices yet) → show "—"
+            // cycle 1: prev_snapshot is empty (no previous reference price yet) → show "—"
             let change_pct: Option<f64> = if prev_snapshot.is_empty() {
                 None
             } else {
@@ -531,18 +525,13 @@ async fn run_cycle(
                 }).unwrap_or(0.0);
                 Some(if session_chg.abs() > 0.01 { session_chg } else { cycle_chg })
             };
-            let sent = cand_sentiment.get(sym).and_then(|s| s.as_ref());
             Some(CandidateInfo {
-                symbol:          sym.clone(),
+                symbol:     sym.clone(),
                 price,
                 change_pct,
-                galaxy_score:    sent.map(|s| s.galaxy_score),
-                bullish_percent: sent.map(|s| s.bullish_percent),
-                alt_rank:        sent.map(|s| s.alt_rank),
-                // filled in later by the analysis loop after analyse_symbol runs
-                rsi:             None,
-                regime:          None,
-                atr_pct:         None,
+                rsi:        None,
+                regime:     None,
+                atr_pct:    None,
             })
         }).collect();
         let mut s = bot_state.write().await;

@@ -64,12 +64,6 @@ pub struct CandidateInfo {
     pub price:           f64,
     /// None on cycle 1 (no previous reference price yet); Some(%) on cycle 2+.
     pub change_pct:      Option<f64>,
-    /// LunarCrush galaxy score 0-100 (None = no data)
-    pub galaxy_score:    Option<f64>,
-    /// % of social posts classified bullish (None = no data)
-    pub bullish_percent: Option<f64>,
-    /// LunarCrush alt_rank (lower = more social momentum)
-    pub alt_rank:        Option<u32>,
     /// RSI(14) value computed during signal analysis, None until first scan.
     #[serde(default)]
     pub rsi:             Option<f64>,
