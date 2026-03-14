@@ -24,8 +24,8 @@ mod hyperliquid_integration_tests {
         // Generate signature
         let signature = client.sign_request(payload, timestamp);
 
-        // Verify signature format (hex string of 64 bytes = 128 chars)
-        assert_eq!(signature.len(), 128);
+        // Verify signature format: HMAC-SHA256 = 32 bytes = 64 hex chars
+        assert_eq!(signature.len(), 64);
         assert!(signature.chars().all(|c| c.is_ascii_hexdigit()));
 
         // Verify same input produces same signature (deterministic)
