@@ -62,6 +62,7 @@ impl SentimentData {
     }
 
     /// Emoji for dashboard: 🟢 bull / 🟡 neutral / 🔴 bear.
+    #[allow(dead_code)]
     pub fn emoji(&self) -> &'static str {
         if self.bullish_percent >= 65.0      { "🟢" }
         else if self.bullish_percent >= 45.0 { "🟡" }

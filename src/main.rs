@@ -271,7 +271,7 @@ async fn run_cycle(
     // Log cycle start (used by daily analyst for context)
     {
         let s = bot_state.read().await;
-        let equity = s.capital + s.positions.iter().map(|p| p.size_usd + p.unrealised_pnl).sum::<f64>();
+        let _equity = s.capital + s.positions.iter().map(|p| p.size_usd + p.unrealised_pnl).sum::<f64>();
         trade_logger.lock().await.log(&TradeEvent::CycleStart {
             ts:             ts_now(),
             cycle_number:   s.cycle_count,

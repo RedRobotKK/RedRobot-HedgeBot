@@ -10,6 +10,7 @@ pub enum Mode {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Config {
     pub mode: Mode,
     pub trading_symbol: String,        // legacy single-symbol field

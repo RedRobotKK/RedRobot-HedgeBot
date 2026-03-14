@@ -24,6 +24,7 @@ impl Database {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn get_recent_trades(&self, _limit: i32) -> Result<Vec<serde_json::Value>> {
         Ok(vec![])
     }

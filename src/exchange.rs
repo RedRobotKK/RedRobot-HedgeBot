@@ -34,6 +34,7 @@ use crate::risk::Account;
 
 /// An open position on Hyperliquid.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct Position {
     pub symbol:        String,
     pub size:          f64,
@@ -43,6 +44,7 @@ pub struct Position {
     pub leverage:      f64,
 }
 
+#[allow(dead_code)]
 impl Position {
     /// Returns `true` when the position has moved ≥ 5% in either direction.
     ///
@@ -71,6 +73,7 @@ pub struct HyperliquidClient {
     testnet:  bool,
 }
 
+#[allow(dead_code)]
 impl HyperliquidClient {
     /// Create a new client pointed at the correct API endpoint for `config.mode`.
     pub fn new(config: &Config) -> Result<Self> {

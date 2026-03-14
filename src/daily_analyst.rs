@@ -207,9 +207,9 @@ fn compute_stats(events: &[TradeEvent], date: &str) -> DayStats {
     let _loss_vol_sum = 0.0f64;
     let _win_atr_sum  = 0.0f64;
     let _loss_atr_sum = 0.0f64;
-    let _trending_wins = 0u64; let mut trending_total = 0u64;
-    let _neutral_wins  = 0u64; let mut neutral_total  = 0u64;
-    let _ranging_wins  = 0u64; let mut ranging_total  = 0u64;
+    let _trending_wins = 0u64;
+    let _neutral_wins  = 0u64;
+    let _ranging_wins  = 0u64;
     let mut r_sum   = 0.0f64;
     let mut hold_sum = 0u64;
     let mut all_wins_usd: Vec<f64> = Vec::new();
@@ -225,23 +225,15 @@ fn compute_stats(events: &[TradeEvent], date: &str) -> DayStats {
                 s.final_capital = *free_capital;
             }
 
-            TradeEvent::Decision { action, skip_reason, regime, .. } => {
+            TradeEvent::Decision { action, skip_reason, .. } => {
                 s.total_decisions += 1;
                 if action == "SKIP" || skip_reason.is_some() { s.total_skips += 1; }
-                if action != "SKIP" {
-                    match regime.as_str() {
-                        "Trending" => trending_total += 1,
-                        "Neutral"  => neutral_total  += 1,
-                        "Ranging"  => ranging_total  += 1,
-                        _ => {}
-                    }
-                }
             }
 
             TradeEvent::TradeEntry { symbol, side, entry_price, confidence, ts,
-                                     stop_loss, take_profit, leverage, size_usd,
-                                     r_risk_usd, rationale, in_circuit_breaker,
-                                     portfolio_heat_pct, kelly_pct, .. } => {
+                                     stop_loss, take_profit: _, leverage: _, size_usd,
+                                     r_risk_usd: _, rationale, in_circuit_breaker: _,
+                                     portfolio_heat_pct: _, kelly_pct: _, .. } => {
                 s.total_entries += 1;
                 let hour = parse_hour(ts);
                 if hour < 24 {
@@ -265,7 +257,7 @@ fn compute_stats(events: &[TradeEvent], date: &str) -> DayStats {
             }
 
             TradeEvent::TradeExit { symbol, pnl_usd, r_multiple, reason,
-                                    minutes_held, cycles_held, .. } => {
+                                    minutes_held, cycles_held: _, .. } => {
                 s.total_exits += 1;
                 *symbol_pnl.entry(symbol.clone()).or_insert(0.0) += pnl_usd;
                 s.day_pnl_usd += pnl_usd;
