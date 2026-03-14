@@ -10,7 +10,7 @@
 //! - Strategy: Dynamic position sizing based on pain (support distance) vs reward (expected move)
 
 use redrobot_hedgebot::backtest::{Backtester, BacktestConfig, TradeAction};
-use redrobot_hedgebot::dynamic_position_sizing::{DynamicSizer, SupportResistance, TechnicalSetup, DynamicPositionSize};
+use redrobot_hedgebot::dynamic_position_sizing::{DynamicSizer, SupportResistance, TechnicalSetup};
 use redrobot_hedgebot::strategies::MarketSnapshot;
 use std::collections::HashMap;
 
@@ -32,6 +32,7 @@ fn generate_test_data() -> Vec<MarketSnapshot> {
             low: price - 0.3,
             close: price + 0.1,
             volume: 1000.0 + i as f64 * 50.0,
+            ..Default::default()
         });
     }
 
@@ -46,6 +47,7 @@ fn generate_test_data() -> Vec<MarketSnapshot> {
             low: price - 0.8,
             close: price - 0.2,
             volume: 1500.0 + i as f64 * 50.0,
+            ..Default::default()
         });
     }
 
@@ -60,6 +62,7 @@ fn generate_test_data() -> Vec<MarketSnapshot> {
             low: price - 0.4,
             close: price + 0.15,
             volume: 1200.0 + i as f64 * 30.0,
+            ..Default::default()
         });
     }
 
@@ -74,6 +77,7 @@ fn generate_test_data() -> Vec<MarketSnapshot> {
             low: price - 0.9,
             close: price - 0.3,
             volume: 2000.0,
+            ..Default::default()
         });
     }
 
@@ -88,6 +92,7 @@ fn generate_test_data() -> Vec<MarketSnapshot> {
             low: price - 0.3,
             close: price + 0.5,
             volume: 2500.0 + i as f64 * 100.0,
+            ..Default::default()
         });
     }
 
@@ -97,9 +102,9 @@ fn generate_test_data() -> Vec<MarketSnapshot> {
 /// Calculate technical indicators for a price point
 fn calculate_technicals(
     price: f64,
-    high: f64,
-    low: f64,
-    volume: f64,
+    _high: f64,
+    _low: f64,
+    _volume: f64,
     volatility: f64,
 ) -> (f64, bool, f64) {
     // Simple RSI approximation based on price position relative to recent range
@@ -287,7 +292,7 @@ fn test_dynamic_sizing_theory_validation() {
         .iter()
         .filter(|t| t.pnl.map_or(false, |p| p > 0.0))
         .count();
-    let losing_trades = closed_trades
+    let _losing_trades = closed_trades
         .iter()
         .filter(|t| t.pnl.map_or(false, |p| p < 0.0))
         .count();

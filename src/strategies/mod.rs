@@ -87,7 +87,7 @@ impl SignalType {
 }
 
 /// Market data snapshot for strategy analysis
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MarketSnapshot {
     pub timestamp: i64,
     pub open: f64,
