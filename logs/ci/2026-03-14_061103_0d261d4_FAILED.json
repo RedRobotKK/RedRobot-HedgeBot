@@ -1,0 +1,192 @@
+{
+  "schema_version": "1.0",
+  "meta": {
+    "run_at": "2026-03-14T06:10:40Z",
+    "commit": "0d261d4",
+    "commit_full": "0d261d41f8c4459521f1741492142efdc9b0b151",
+    "commit_message": "fix: position_test.rs \u2014 !(cur <= stop) \u2192 cur > stop (Run #24)",
+    "branch": "master",
+    "overall_status": "FAILED",
+    "triggered_by": "push"
+  },
+  "environment": {
+    "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
+    "cargo": "cargo 1.93.1 (083ac5135 2025-12-15)",
+    "os_kernel": "6.8.0-101-generic",
+    "arch": "x86_64",
+    "ram_total": "961Mi",
+    "swap_active": true
+  },
+  "steps": {
+    "tests": {
+      "status": "FAILED",
+      "exit_code": 101,
+      "duration_seconds": 11,
+      "total_passed": 0,
+      "total_failed": 0,
+      "total_ignored": 0,
+      "failures": []
+    },
+    "clippy": {
+      "status": "FAILED",
+      "exit_code": 101,
+      "duration_seconds": 8,
+      "error_count": 18,
+      "errors": [
+        {
+          "code": "E",
+          "message": "unused import: `crate::metrics::PerformanceMetrics`",
+          "file": "src/web_dashboard.rs",
+          "line": 812,
+          "col": 9
+        },
+        {
+          "code": "E0689",
+          "message": "can't call method `abs` on ambiguous numeric type `{float}`",
+          "file": "src/web_dashboard.rs",
+          "line": 880,
+          "col": 32
+        },
+        {
+          "code": "E0689",
+          "message": "can't call method `abs` on ambiguous numeric type `{float}`",
+          "file": "src/web_dashboard.rs",
+          "line": 888,
+          "col": 30
+        },
+        {
+          "code": "E0689",
+          "message": "can't call method `abs` on ambiguous numeric type `{float}`",
+          "file": "src/web_dashboard.rs",
+          "line": 980,
+          "col": 29
+        },
+        {
+          "code": "E0689",
+          "message": "can't call method `abs` on ambiguous numeric type `{float}`",
+          "file": "src/main.rs",
+          "line": 1606,
+          "col": 40
+        },
+        {
+          "code": "E0689",
+          "message": "can't call method `abs` on ambiguous numeric type `{float}`",
+          "file": "src/main.rs",
+          "line": 1638,
+          "col": 49
+        },
+        {
+          "code": "E0689",
+          "message": "can't call method `abs` on ambiguous numeric type `{float}`",
+          "file": "src/main.rs",
+          "line": 1857,
+          "col": 35
+        },
+        {
+          "code": "E0689",
+          "message": "can't call method `abs` on ambiguous numeric type `{float}`",
+          "file": "src/main.rs",
+          "line": 1864,
+          "col": 30
+        },
+        {
+          "code": "E0689",
+          "message": "can't call method `abs` on ambiguous numeric type `{float}`",
+          "file": "src/main.rs",
+          "line": 1880,
+          "col": 35
+        },
+        {
+          "code": "E0689",
+          "message": "can't call method `abs` on ambiguous numeric type `{float}`",
+          "file": "src/main.rs",
+          "line": 1894,
+          "col": 39
+        },
+        {
+          "code": "E0689",
+          "message": "can't call method `abs` on ambiguous numeric type `{float}`",
+          "file": "src/main.rs",
+          "line": 1902,
+          "col": 28
+        },
+        {
+          "code": "E0689",
+          "message": "can't call method `abs` on ambiguous numeric type `{float}`",
+          "file": "src/main.rs",
+          "line": 1920,
+          "col": 36
+        },
+        {
+          "code": "E0689",
+          "message": "can't call method `abs` on ambiguous numeric type `{float}`",
+          "file": "src/main.rs",
+          "line": 1941,
+          "col": 36
+        },
+        {
+          "code": "E0689",
+          "message": "can't call method `abs` on ambiguous numeric type `{float}`",
+          "file": "src/main.rs",
+          "line": 1957,
+          "col": 40
+        },
+        {
+          "code": "E0689",
+          "message": "can't call method `abs` on ambiguous numeric type `{float}`",
+          "file": "src/main.rs",
+          "line": 1976,
+          "col": 32
+        },
+        {
+          "code": "E0689",
+          "message": "can't call method `abs` on ambiguous numeric type `{float}`",
+          "file": "src/main.rs",
+          "line": 1997,
+          "col": 32
+        },
+        {
+          "code": "E0689",
+          "message": "can't call method `abs` on ambiguous numeric type `{float}`",
+          "file": "src/main.rs",
+          "line": 2004,
+          "col": 32
+        },
+        {
+          "code": "E",
+          "message": "could not compile `redrobot-hedgebot` (bin \"redrobot-hedgebot\" test) due to 17 previous errors"
+        }
+      ]
+    },
+    "audit": {
+      "status": "PASSED",
+      "exit_code": 0,
+      "duration_seconds": 3,
+      "vulnerability_count": 2,
+      "vulnerabilities": [
+        {
+          "id": "RUSTSEC-2021-0141",
+          "url": "https://rustsec.org/advisories/RUSTSEC-2021-0141",
+          "crate": "rustls-pemfile",
+          "version": "1.0.4",
+          "title": "rustls-pemfile is unmaintained"
+        },
+        {
+          "id": "RUSTSEC-2025-0134",
+          "url": "https://rustsec.org/advisories/RUSTSEC-2025-0134",
+          "crate": "wasm-bindgen",
+          "version": "0.2.111"
+        }
+      ]
+    }
+  },
+  "service": {
+    "name": "hedgebot",
+    "status": "active",
+    "active_since": "Thu 2026-03-12 07:15:10 UTC",
+    "recent_logs": [
+      "Mar 12 07:15:10 ubuntu-s-1vcpu-1gb-sgp1-01 systemd[1]: Started hedgebot.service - RedRobot HedgeBot.",
+      "Mar 12 07:15:13 ubuntu-s-1vcpu-1gb-sgp1-01 redrobot-hedgebot[217810]: [2026-03-12T07:15:13.533Z ERROR redrobot_hedgebot] Dashboard: Address already in use (os error 98)"
+    ]
+  }
+}
