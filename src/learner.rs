@@ -379,16 +379,22 @@ mod tests {
     fn update_losing_trade_penalises_aligned_signals() {
         let mut w_win  = SignalWeights::default();
         let mut w_lose = SignalWeights::default();
-        let contrib = all_bullish_contrib();
 
-        w_win.update(&contrib,  true, true);   // profitable long — aligned
-        w_lose.update(&contrib, true, false);  // losing long — aligned
+        // Only RSI is bullish (aligned with LONG); all other core signals are bearish
+        // (misaligned); optional signals absent. This isolates RSI's relative movement:
+        // win  → RSI gets +LR_WIN,  misaligned core gets −LR_LOSE → RSI fraction ↑
+        // lose → RSI gets −LR_LOSE, misaligned core gets +LR_WIN×0.5 → RSI fraction ↓
+        let contrib = SignalContribution {
+            rsi_bullish: true,
+            // all others false / not-present (default)
+            ..Default::default()
+        };
 
-        // After win: rsi got +LR_WIN.  After loss: rsi got −LR_LOSE.
-        // Both are renormalised, so comparison is relative.
-        // The win case should have higher rsi weight relative to the total.
+        w_win.update(&contrib,  true, true);   // profitable long — RSI aligned, rest misaligned
+        w_lose.update(&contrib, true, false);  // losing long    — RSI aligned, rest misaligned
+
         assert!(w_win.rsi > w_lose.rsi,
-            "winning trade should boost aligned signal ({:.4}) vs losing ({:.4})",
+            "winning trade should boost aligned RSI ({:.4}) vs losing ({:.4})",
             w_win.rsi, w_lose.rsi);
     }
 

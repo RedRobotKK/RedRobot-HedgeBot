@@ -187,7 +187,10 @@ fn calc_rsi_wilder(closes: &[f64], period: usize) -> f64 {
         avg_loss = (avg_loss * (period as f64 - 1.0) + l) / period as f64;
     }
 
-    if avg_loss < 1e-12 { return 100.0; }
+    if avg_loss < 1e-12 {
+        // No losses: flat market (no gains either) → neutral 50; pure uptrend → 100
+        return if avg_gain < 1e-12 { 50.0 } else { 100.0 };
+    }
     let rs = avg_gain / avg_loss;
     100.0 - (100.0 / (1.0 + rs))
 }
@@ -630,13 +633,14 @@ mod tests {
 
     #[test]
     fn atr_approximate_for_known_series() {
-        // rising_candles step=1 → high=close+0.2, low=close-0.2 → TR ≈ 0.8 per bar
+        // rising_candles step=1 → high=close+0.2, low=close-0.2
+        // TR = max(high-low=0.4, |high-prev_close|=1.2, |low-prev_close|=0.8) = 1.2 per bar
         let candles = rising_candles(100.0, 1.0, 50);
         let h: Vec<f64> = candles.iter().map(|c| c.high).collect();
         let l: Vec<f64> = candles.iter().map(|c| c.low).collect();
         let c: Vec<f64> = candles.iter().map(|c| c.close).collect();
         let atr = calc_atr_wilder(&h, &l, &c, 14);
-        assert!((atr - 0.8).abs() < 0.2, "ATR for step=1 should ≈ 0.8, got {atr:.4}");
+        assert!((atr - 1.2).abs() < 0.3, "ATR for step=1 should ≈ 1.2, got {atr:.4}");
     }
 
     // ── ADX ───────────────────────────────────────────────────────────────────
