@@ -4,9 +4,11 @@ use std::collections::HashMap;
 
 // ─────────────────────────── Retry configuration ─────────────────────────────
 /// Maximum number of HTTP request attempts before giving up.
-const MAX_RETRIES: u32 = 3;
+/// 5 attempts covers transient 502 windows: delays = 1s, 2s, 4s, 8s → ~15s total.
+const MAX_RETRIES: u32 = 5;
 /// Base delay for exponential back-off in milliseconds (doubles each attempt).
-const RETRY_BASE_MS: u64 = 300;
+/// 1 000 ms base → 1 s, 2 s, 4 s, 8 s between retries.
+const RETRY_BASE_MS: u64 = 1_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PriceData {
@@ -112,7 +114,24 @@ impl MarketClient {
             async move {
                 let resp = client.post(&url).json(&body).send().await?;
                 if !resp.status().is_success() {
-                    anyhow::bail!("Hyperliquid allMids returned HTTP {}", resp.status());
+                    let status = resp.status();
+                    match status.as_u16() {
+                        502 | 503 | 504 => anyhow::bail!(
+                            "hl_api_502: Hyperliquid servers temporarily unavailable (HTTP {}). \
+                             This is a normal transient blip — the bot will retry automatically \
+                             and resume as soon as the API recovers. No action needed.",
+                            status
+                        ),
+                        429 => anyhow::bail!(
+                            "hl_api_429: Hyperliquid rate limit hit (HTTP 429). \
+                             The bot is sending requests too quickly. Backing off.",
+                        ),
+                        _ => anyhow::bail!(
+                            "hl_api_error: Hyperliquid allMids returned HTTP {} — \
+                             if this persists check https://status.hyperliquid.xyz",
+                            status
+                        ),
+                    }
                 }
                 let raw: HashMap<String, String> = resp.json().await?;
                 let mids: HashMap<String, f64> = raw

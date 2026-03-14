@@ -68,6 +68,57 @@ use sentiment::{SentimentCache, SharedSentiment};
 use funding::{FundingCache, SharedFunding};
 use trade_log::{SharedTradeLogger, TradeEvent, TradeLogger, ts_now, date_today};
 
+// ═══════════════════════════════════════════════════════════════════════════════
+//  ERROR CLASSIFICATION – human-friendly cycle error messages
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Classify a cycle error string and return `(sleep_secs, friendly_message)`.
+///
+/// The message is designed to be calm and actionable for a non-technical user
+/// watching the dashboard.  The sleep duration gives the upstream service time
+/// to recover before the bot retries.
+fn classify_cycle_error(err: &str) -> (u64, String) {
+    // Tag injected by data.rs for gateway / server errors
+    if err.contains("hl_api_502") || err.contains("502") || err.contains("503") || err.contains("504") {
+        return (
+            60,
+            "🌐 Hyperliquid servers are temporarily busy (502/503). \
+             This happens occasionally during high market activity or maintenance. \
+             The bot is pausing 60 s and will resume automatically — no action needed."
+            .to_string(),
+        );
+    }
+    if err.contains("hl_api_429") || err.contains("429") || err.contains("Too Many Requests") {
+        return (
+            30,
+            "⏱ API rate limit reached. \
+             The bot is backing off for 30 s and will slow its request rate. \
+             No action needed."
+            .to_string(),
+        );
+    }
+    if err.contains("timeout") || err.contains("connection") || err.contains("dns") {
+        return (
+            20,
+            "📡 Network connectivity issue detected. \
+             Please check that the VPS has internet access. \
+             Retrying in 20 s."
+            .to_string(),
+        );
+    }
+    // Generic fallback
+    (
+        10,
+        format!(
+            "⚠ Unexpected error — the bot will retry in 10 s. \
+             If this keeps happening, restart the service with: \
+             `sudo systemctl restart redrobot-hedgebot`\n\
+             Detail: {}",
+            err
+        ),
+    )
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::Builder::from_default_env()
@@ -201,9 +252,12 @@ async fn main() -> Result<()> {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
             }
             Err(e) => {
-                error!("Cycle error: {}", e);
-                set_status(&bot_state, &format!("⚠ Error: {} — retrying in 10s", e)).await;
-                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                let err_str = format!("{}", e);
+                let (sleep_secs, friendly_msg) = classify_cycle_error(&err_str);
+                error!("Cycle error: {}", err_str);
+                warn!("{}", friendly_msg);
+                set_status(&bot_state, &friendly_msg).await;
+                tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
             }
         }
     }
