@@ -170,7 +170,7 @@ impl HyperliquidClient {
     }
 
     /// Sign request with HMAC-SHA256
-    fn sign_request(&self, payload: &str, timestamp: u64) -> String {
+    pub fn sign_request(&self, payload: &str, timestamp: u64) -> String {
         use hmac::{Hmac, Mac};
         use sha2::Sha256;
 
@@ -185,7 +185,7 @@ impl HyperliquidClient {
     }
 
     /// Rate limiting and retry logic
-    async fn rate_limit_check(&self) -> Result<()> {
+    pub async fn rate_limit_check(&self) -> Result<()> {
         let mut remaining = self.rate_limit_remaining.write().await;
         if *remaining == 0 {
             warn!("Rate limit exhausted, waiting...");

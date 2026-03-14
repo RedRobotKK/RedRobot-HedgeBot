@@ -1,5 +1,5 @@
 /// Integration tests for the trading system
-use drift_multi_protocol::*;
+use redrobot_hedgebot::*;
 
 #[test]
 fn test_complete_account_lifecycle() {

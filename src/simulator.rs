@@ -250,7 +250,7 @@ impl Simulator {
         // Update strategy metrics with final P&L
         for trade in trades {
             if let Some(metrics) = strategy_metrics.get_mut(&trade.strategy) {
-                if trade.pnl.map_or(false, |p| p > 0.0) {
+                if trade.pnl.is_some_and(|p| p > 0.0) {
                     metrics.trades_won += 1;
                 } else {
                     metrics.trades_lost += 1;
