@@ -38,6 +38,7 @@ const CACHE_TTL: Duration = Duration::from_secs(180);
 
 /// Funding rate snapshot for a single perpetual symbol.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct FundingData {
     pub symbol:       String,
     /// Last realised 8-hour funding rate (e.g. 0.0001 = 0.01 %).
@@ -52,6 +53,7 @@ pub struct FundingData {
 
 impl FundingData {
     /// Annualised rate as a percentage (rate × 3 payments/day × 365 days × 100).
+    #[allow(dead_code)]
     pub fn annualised_pct(&self) -> f64 {
         self.funding_rate * 3.0 * 365.0 * 100.0
     }

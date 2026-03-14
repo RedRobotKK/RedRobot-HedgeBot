@@ -41,6 +41,7 @@ use crate::trade_log::{SharedTradeLogger, TradeEvent, date_yesterday};
 // ─────────────────────────── Claude API plumbing ─────────────────────────────
 
 #[derive(Debug, Serialize)]
+#[allow(dead_code)]
 struct ClaudeRequest {
     model:      String,
     max_tokens: u32,
@@ -49,6 +50,7 @@ struct ClaudeRequest {
 }
 
 #[derive(Debug, Serialize)]
+#[allow(dead_code)]
 struct ClaudeMessage {
     role:    String,
     content: String,
@@ -376,6 +378,7 @@ fn compute_stats(events: &[TradeEvent], date: &str) -> DayStats {
 
 // Small helper struct — Rust doesn't allow tuple structs as hashmap values easily
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct TradeEntry_ {
     symbol:     String,
     side:       String,

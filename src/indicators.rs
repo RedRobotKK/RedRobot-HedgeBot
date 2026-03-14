@@ -76,8 +76,8 @@ pub struct TechnicalIndicators {
     // ── Volatility regime ─────────────────────────────────────────────────────
     /// ATR expansion ratio: current ATR(14) ÷ mean ATR over the prior 24 bars.
     /// > 1.5 = breakout expansion (override ranging regime → trending).
-    /// < 0.7 = volatility compression (likely squeeze / low-conviction).
-    /// = 1.0 = normal / unavailable.
+    /// > < 0.7 = volatility compression (likely squeeze / low-conviction).
+    /// > = 1.0 = normal / unavailable.
     pub atr_expansion_ratio: f64,
 }
 
@@ -298,8 +298,8 @@ pub fn ema_last(prices: &[f64], period: usize) -> f64 {
 ///
 /// Interpretation:
 ///   > 27  — clearly trending (use momentum strategies)
-///   20–27 — weakening or building trend (use balanced approach)
-///   < 19  — ranging / choppy (use mean reversion strategies)
+///   > 20–27 — weakening or building trend (use balanced approach)
+///   > < 19  — ranging / choppy (use mean reversion strategies)
 fn calc_adx(highs: &[f64], lows: &[f64], closes: &[f64], period: usize) -> f64 {
     let n = highs.len();
     // Need at least 2×period bars for reliable ADX
@@ -398,8 +398,8 @@ fn calc_volume_ratio(candles: &[PriceData], period: usize) -> f64 {
 ///
 /// Compares recent volatility against the recent historical baseline.
 /// > 1.5 = breakout / expanding range (acts as regime override → Trending)
-/// < 0.7 = compression / squeeze (low-conviction environment)
-/// = 1.0 = default / insufficient data
+/// > < 0.7 = compression / squeeze (low-conviction environment)
+/// > = 1.0 = default / insufficient data
 fn calc_atr_expansion_ratio(highs: &[f64], lows: &[f64], closes: &[f64], period: usize, lookback: usize) -> f64 {
     let n = closes.len();
     if n < period + lookback + 1 { return 1.0; }

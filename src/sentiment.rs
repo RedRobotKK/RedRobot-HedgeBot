@@ -233,6 +233,7 @@ impl SentimentCache {
     // ── Private ───────────────────────────────────────────────────────────
 
     /// Number of coins currently in the cache (0 = not yet fetched or error).
+    #[allow(dead_code)]
     pub async fn coin_count(&self) -> usize {
         self.inner.read().await.data.len()
     }

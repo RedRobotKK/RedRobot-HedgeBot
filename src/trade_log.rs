@@ -220,6 +220,7 @@ pub enum TradeEvent {
     },
 }
 
+#[allow(dead_code)]
 impl TradeEvent {
     /// ISO 8601 timestamp for this event.
     pub fn ts(&self) -> &str {
@@ -366,6 +367,7 @@ impl TradeLogger {
     }
 
     /// Returns the path of yesterday's log file (used by the daily analyst).
+    #[allow(dead_code)]
     pub fn yesterday_log_path(&self) -> PathBuf {
         let yesterday = (Utc::now() - chrono::Duration::days(1))
             .format("%Y-%m-%d")

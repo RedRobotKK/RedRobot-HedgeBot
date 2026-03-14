@@ -186,14 +186,14 @@ impl SignalWeights {
             &mut self.rsi, &mut self.bollinger, &mut self.macd,
             &mut self.ema_cross, &mut self.order_flow,
         ] {
-            *w = w.max(0.04).min(0.50);
+            *w = w.clamp(0.04, 0.50);
         }
         // Trend 10-bar: floor lowered to 0.01 — backtest showed consistent harm,
         // kept for backward-compat with weight files but near-eliminated.
-        self.trend = self.trend.max(0.01).min(0.30);
+        self.trend = self.trend.clamp(0.01, 0.30);
 
         // Optional signals: can go to 0 (no data = no contribution) or ceiling 0.40
-        self.z_score      = self.z_score.max(0.0).min(0.40);
+        self.z_score      = self.z_score.clamp(0.0, 0.40);
         self.volume       = self.volume.max(0.0).min(0.40);
         self.sentiment    = self.sentiment.max(0.0).min(0.40);
         self.funding_rate = self.funding_rate.max(0.0).min(0.40);

@@ -206,9 +206,8 @@ impl BtcMarketContext {
         // Asset leading BTC by >2% may mean-revert back toward BTC performance.
         let lag = self.asset_return_4h - self.btc_return_4h;
         let rel_bonus: f64 = if self.dominance >= 55.0 && self.btc_return_4h.abs() > 0.5 {
-            if      action == "BUY"  && lag < -2.0 { 0.04 }  // lagging → catch-up BUY
-            else if action == "SELL" && lag >  2.0 { 0.04 }  // leading → mean-reversion SELL
-            else                                    { 0.00 }
+            if (action == "BUY" && lag < -2.0) || (action == "SELL" && lag > 2.0) { 0.04 }
+            else { 0.00 }
         } else {
             0.00
         };
@@ -225,6 +224,7 @@ impl BtcMarketContext {
 /// `sentiment` is `None` when LunarCrush data is not available.
 /// `btc_ctx` is `None` for BTC itself (no self-referential filter).
 /// `htf` is `None` when 4-hour candles are unavailable (MTF filter skipped).
+#[allow(clippy::too_many_arguments)]
 pub fn make_decision(
     candles:   &[PriceData],
     ind:       &TechnicalIndicators,
@@ -280,7 +280,7 @@ pub fn make_decision(
         let r1h = ind.rsi;
         let both_oversold  = r1h < 45.0 && r4h < 50.0;
         let both_overbought = r1h > 55.0 && r4h > 50.0;
-        let r4h_extreme    = r4h < 35.0 || r4h > 65.0;
+        let r4h_extreme    = !(35.0..=65.0).contains(&r4h);
         if (both_oversold || both_overbought) && r4h_extreme { 1.30 }
         else if both_oversold || both_overbought               { 1.10 }
         else                                                   { 0.80 }
