@@ -164,6 +164,7 @@ impl Backtester {
         };
 
         self.positions.insert(symbol, position);
+        self.closed_trades.push(trade.clone());
         Ok(trade)
     }
 
