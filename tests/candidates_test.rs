@@ -9,7 +9,6 @@
 /// For per-method unit tests see the #[cfg(test)] modules inside:
 ///   src/data.rs      — hl_to_binance, filter_candidates
 ///   src/sentiment.rs — SentimentData, normalise_symbol, JSON shapes
-
 use std::collections::HashMap;
 
 // ── Inline copies of pure functions ───────────────────────────────────────────
@@ -254,7 +253,7 @@ fn pipeline_candidate_to_sentiment_lookup_end_to_end() {
     let mut hits = 0usize;
     for sym in &candidates {
         let key = normalise_for_lunarcrush(sym);
-        if lc_cache.get(key).is_some() { hits += 1; }
+        if lc_cache.contains_key(key) { hits += 1; }
     }
 
     // All 4 symbols (BTC, ETH, SOL, kBONK→BONK) should hit
