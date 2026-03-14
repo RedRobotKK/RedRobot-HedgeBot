@@ -149,7 +149,7 @@ fn test_capital_allocation_validation() {
 fn test_leverage_constraints_by_purpose() {
     let mut manager = AccountManager::new();
 
-    let purposes = vec![
+    let purposes = [
         (AccountPurpose::Scalp, 100.0),
         (AccountPurpose::Swing, 20.0),
         (AccountPurpose::Position, 10.0),
