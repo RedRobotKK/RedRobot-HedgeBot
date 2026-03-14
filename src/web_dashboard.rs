@@ -263,7 +263,8 @@ async fn dashboard_handler(State(state): State<SharedState>) -> Html<String> {
                 _ => String::new(),
             };
 
-            format!(r#"<div class="pos-card" style="border-left:3px solid {border}" id="pos-{sym_id}">
+            format!(r#"<div class="pos-flip-wrap" id="pf-{sym_id}"><div class="pos-flip-inner">
+<div class="pos-card" style="border-left:3px solid {border}" id="pos-{sym_id}" onclick="flipPos('{sym_id}')">
   <div class="pos-header">
     <span class="pos-sym">{logo}{sym}</span>{name}{dca}
     <span class="pos-side" style="color:{sc}">{arrow} {side}</span>
@@ -289,7 +290,18 @@ async fn dashboard_handler(State(state): State<SharedState>) -> Html<String> {
   </div>
   <div class="pos-meta" style="color:#8b949e">{tranche} &nbsp;·&nbsp; {time}</div>
   {ai_row}
-</div>"#,
+  <div class="pos-flip-hint">📊 tap to chart</div>
+</div>
+<div class="pos-flip-back" style="border-left:3px solid {border}">
+  <div onclick="flipPos('{sym_id}')" style="display:flex;justify-content:space-between;align-items:center;padding-bottom:7px;cursor:pointer;user-select:none">
+    <span style="font-size:.82em;font-weight:700;color:var(--text)">{sym} · 5m</span>
+    <span style="font-size:.68em;color:#8b949e;background:#21262d;padding:1px 7px;border-radius:8px">← back</span>
+  </div>
+  <iframe src="https://www.tradingview.com/widgetembed/?symbol=BINANCE:{sym}USDT&interval=5&theme=dark&style=1&hide_side_toolbar=1&hide_top_toolbar=1&locale=en&allow_symbol_change=0&save_image=0&hotlist=0&calendar=0"
+    width="100%" height="205" frameborder="0"
+    style="border-radius:6px;display:block" loading="lazy"></iframe>
+</div>
+</div></div>"#,
                 border   = border_colour,
                 sym_id   = p.symbol.to_lowercase(),
                 logo     = logo_img,
@@ -571,10 +583,23 @@ body{{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacS
                 margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:6px}}
 .section-title-left{{display:flex;align-items:center;gap:6px}}
 .badge{{background:var(--dim);color:var(--muted);padding:2px 7px;border-radius:10px;font-size:.85em}}
-/* ── Position cards ── */
+/* ── Position cards + flip ── */
 .pos-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px}}
+/* Flip wrapper sits in the grid; inner uses CSS grid to stack front & back */
+.pos-flip-wrap{{perspective:1200px}}
+.pos-flip-inner{{display:grid;grid-template-columns:1fr;transform-style:preserve-3d;
+                 transition:transform .55s cubic-bezier(.4,0,.2,1)}}
+.pos-flip-wrap.flipped .pos-flip-inner{{transform:rotateY(180deg)}}
+/* Front face */
 .pos-card{{background:var(--dim);border-radius:8px;padding:12px;border-left:3px solid var(--border);
-           animation:fadeSlide .35s ease both}}
+           animation:fadeSlide .35s ease both;
+           grid-area:1/1;backface-visibility:hidden;-webkit-backface-visibility:hidden;
+           cursor:pointer}}
+/* Back face — chart */
+.pos-flip-back{{grid-area:1/1;backface-visibility:hidden;-webkit-backface-visibility:hidden;
+                transform:rotateY(180deg);background:var(--dim);border-radius:8px;padding:10px;
+                overflow:hidden;min-height:240px;border-left:3px solid var(--border)}}
+.pos-flip-hint{{text-align:center;font-size:.62em;color:#444c56;margin-top:6px;letter-spacing:.5px;user-select:none}}
 .pos-header{{display:flex;align-items:center;gap:8px;margin-bottom:6px}}
 .pos-sym{{font-weight:700;font-size:1em;color:var(--text)}}
 .pos-side{{font-size:.8em;font-weight:600}}
@@ -710,6 +735,20 @@ tr:hover td{{background:rgba(255,255,255,.03)}}
 </div>
 
 <script>
+/* ── Position card 3-D flip — one chart visible at a time ──────────────── */
+function flipPos(id){{
+  var wrap=document.getElementById('pf-'+id);
+  if(!wrap)return;
+  var opening=!wrap.classList.contains('flipped');
+  /* close any other open chart first */
+  if(opening){{
+    document.querySelectorAll('.pos-flip-wrap.flipped').forEach(function(w){{
+      if(w!==wrap)w.classList.remove('flipped');
+    }});
+  }}
+  wrap.classList.toggle('flipped');
+}}
+
 /* ── Closed trade click-to-expand ─────────────────────────────────────── */
 function toggleDetail(id){{
   var el=document.getElementById(id);
