@@ -395,15 +395,17 @@ fn aggregate_position_average_entry_between_entries() {
 fn dca_rules_max_entries_prevents_5th_entry() {
     let rules = DCARules::default();
     // max_entries = 4 (from DCARules::default)
-    let pos = AggregatePosition::new("BTC".to_string());
-    // Simulate 4 entries already open (entries.len() == 4)
-    // can_add_entry checks: entries.len() < max_entries
-    // At 4 entries (== max_entries), should return false
+    let mut pos = AggregatePosition::new("BTC".to_string());
+    // Fill position to max_entries
+    for _ in 0..rules.max_entries {
+        pos.add_entry(make_entry(50_000.0, 0.01));
+    }
+    // At max capacity (entries.len() == max_entries), adding another is denied
     assert!(
         !pos.can_add_entry(rules.max_entries),
-        "empty position should allow first entry"  // empty = 0 entries, 0 < 4
+        "position at max entries ({}) should not allow a 5th entry",
+        rules.max_entries
     );
-    // A position with 4 entries shouldn't be able to add more
     let max = rules.max_entries;
     assert!(max >= 2, "DCARules should allow at least 2 entries (got {max})");
 }
