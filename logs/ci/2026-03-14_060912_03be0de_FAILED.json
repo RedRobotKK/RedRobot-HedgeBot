@@ -1,0 +1,80 @@
+{
+  "schema_version": "1.0",
+  "meta": {
+    "run_at": "2026-03-14T06:08:40Z",
+    "commit": "03be0de",
+    "commit_full": "03be0de9b2b88d39ff0f25c1cfa2ca79858303c3",
+    "commit_message": "fix: signal_feed_test.rs \u2014 convert /// to //! for module-level doc (Run #23)",
+    "branch": "master",
+    "overall_status": "FAILED",
+    "triggered_by": "push"
+  },
+  "environment": {
+    "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
+    "cargo": "cargo 1.93.1 (083ac5135 2025-12-15)",
+    "os_kernel": "6.8.0-101-generic",
+    "arch": "x86_64",
+    "ram_total": "961Mi",
+    "swap_active": true
+  },
+  "steps": {
+    "tests": {
+      "status": "FAILED",
+      "exit_code": 101,
+      "duration_seconds": 25,
+      "total_passed": 0,
+      "total_failed": 0,
+      "total_ignored": 0,
+      "failures": []
+    },
+    "clippy": {
+      "status": "FAILED",
+      "exit_code": 101,
+      "duration_seconds": 4,
+      "error_count": 2,
+      "errors": [
+        {
+          "code": "E",
+          "message": "the use of negated comparison operators on partially ordered types produces code that is hard to read and refactor, plea",
+          "file": "tests/position_test.rs",
+          "line": 296,
+          "col": 13
+        },
+        {
+          "code": "E",
+          "message": "could not compile `redrobot-hedgebot` (test \"position_test\") due to 1 previous error"
+        }
+      ]
+    },
+    "audit": {
+      "status": "PASSED",
+      "exit_code": 0,
+      "duration_seconds": 3,
+      "vulnerability_count": 2,
+      "vulnerabilities": [
+        {
+          "id": "RUSTSEC-2021-0141",
+          "url": "https://rustsec.org/advisories/RUSTSEC-2021-0141",
+          "crate": "rustls-pemfile",
+          "version": "1.0.4",
+          "title": "rustls-pemfile is unmaintained"
+        },
+        {
+          "id": "RUSTSEC-2025-0134",
+          "url": "https://rustsec.org/advisories/RUSTSEC-2025-0134",
+          "crate": "wasm-bindgen",
+          "version": "0.2.111"
+        }
+      ]
+    }
+  },
+  "service": {
+    "name": "hedgebot",
+    "status": "active",
+    "active_since": "Thu 2026-03-12 07:15:10 UTC",
+    "recent_logs": [
+      "Mar 12 07:15:10 ubuntu-s-1vcpu-1gb-sgp1-01 systemd[1]: Started hedgebot.service - RedRobot HedgeBot.",
+      "Mar 12 07:15:13 ubuntu-s-1vcpu-1gb-sgp1-01 redrobot-hedgebot[217810]: [2026-03-12T07:15:13.533Z ERROR redrobot_hedgebot] Dashboard: Address already in use (os error 98)"
+    ]
+  }
+}
