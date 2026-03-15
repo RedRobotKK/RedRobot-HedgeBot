@@ -232,17 +232,19 @@ if $DO_PROVISION || $DO_DEPLOY; then
     export PATH="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
     source "$HOME/.cargo/env" 2>/dev/null || true
 
-    if ! command -v sqlx &>/dev/null; then
+    SQLX_BIN="$HOME/.cargo/bin/sqlx"
+    if ! "${SQLX_BIN}" --version &>/dev/null; then
       inf "Installing sqlx-cli..."
       cargo install sqlx-cli --no-default-features --features postgres 2>&1 | tail -3
-      ok "sqlx-cli installed"
+      # Explicitly use the full path — the shell's PATH hash is stale after install
+      ok "sqlx-cli installed: $(${SQLX_BIN} --version 2>/dev/null || echo 'ok')"
     else
-      ok "sqlx-cli: $(sqlx --version 2>/dev/null || echo 'installed')"
+      ok "sqlx-cli: $(${SQLX_BIN} --version 2>/dev/null || echo 'installed')"
     fi
 
     cd /RedRobot-HedgeBot
     source /etc/environment
-    sqlx migrate run --database-url "${DATABASE_URL}" 2>&1 \
+    "${SQLX_BIN}" migrate run --database-url "${DATABASE_URL}" 2>&1 \
       && ok "Migrations applied" \
       || echo "⚠ Migration run failed — will be retried on bot startup"
 
@@ -665,13 +667,14 @@ ENDSSH
     export PATH="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
     source "$HOME/.cargo/env" 2>/dev/null || true
     source /etc/environment 2>/dev/null || true
+    SQLX_BIN="$HOME/.cargo/bin/sqlx"
 
     if [ -z "${DATABASE_URL:-}" ]; then
       echo "⚠ DATABASE_URL not set — skipping migrations (run ./deploy.sh --provision first)"
-    elif command -v sqlx &>/dev/null; then
+    elif "${SQLX_BIN}" --version &>/dev/null; then
       cd /RedRobot-HedgeBot
       echo "▸ Running sqlx migrations…"
-      sqlx migrate run --database-url "${DATABASE_URL}" \
+      "${SQLX_BIN}" migrate run --database-url "${DATABASE_URL}" \
         && echo "✓ Migrations applied" \
         || echo "⚠ Migration failed — check DB connection"
     else

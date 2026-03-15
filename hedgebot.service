@@ -7,6 +7,11 @@ After=network-online.target postgresql.service
 Wants=network-online.target
 # Hard dependency: if PostgreSQL fails to start, don't start the bot.
 Requires=postgresql.service
+# Cap restart attempts: 5 restarts within 2 minutes → service enters
+# failed state so the operator is alerted rather than spinning forever.
+# NOTE: StartLimitIntervalSec/Burst must be in [Unit], not [Service].
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -27,11 +32,6 @@ ExecStart=/RedRobot-HedgeBot/target/release/redrobot-hedgebot
 # time to recover if it was the root cause of the crash.
 Restart=on-failure
 RestartSec=5s
-
-# Cap restart attempts: 5 restarts within 2 minutes → service enters
-# failed state so the operator is alerted rather than spinning forever.
-StartLimitIntervalSec=120
-StartLimitBurst=5
 
 # Ensure the entire cgroup is gone before ExecStartPre runs again.
 KillMode=control-group
