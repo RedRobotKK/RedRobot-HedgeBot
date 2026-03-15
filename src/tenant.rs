@@ -87,6 +87,7 @@ pub struct TenantConfig {
     /// Hyperliquid wallet address (0x…) — required for live trading.
     pub wallet_address:  Option<String>,
     /// Private key hex — required for live order signing.  **Never logged.**
+    #[allow(dead_code)]
     pub secret_key:      Option<String>,
     /// Service tier.
     pub tier:            TenantTier,
@@ -136,6 +137,7 @@ impl TenantConfig {
         }
     }
 
+    #[allow(dead_code)]
     pub fn live(name: &str, capital: f64, wallet: &str, secret: &str) -> Self {
         TenantConfig {
             display_name:       name.to_string(),
@@ -247,6 +249,7 @@ impl TenantManager {
     pub fn count(&self) -> usize { self.tenants.len() }
 
     /// Remove a tenant (e.g., on churn).
+    #[allow(dead_code)]
     pub fn deregister(&mut self, id: &TenantId) -> Result<()> {
         self.tenants.remove(id)
             .ok_or_else(|| anyhow!("Tenant {} not found", id))?;
@@ -369,6 +372,7 @@ impl TenantManager {
     }
 
     /// Returns `true` when the tenant has accepted the Terms & Risk Disclosure.
+    #[allow(dead_code)]
     pub fn has_accepted_terms(&self, id: &TenantId) -> bool {
         self.tenants.get(id)
             .and_then(|h| h.config.terms_accepted_at)
@@ -406,6 +410,7 @@ impl TenantManager {
     ///
     /// Returns the *previous* balance (needed by `fund_tracker::detect_and_record`
     /// to compute the delta for deposit/withdrawal detection).
+    #[allow(dead_code)]
     pub fn update_hl_balance(&mut self, id: &TenantId, new_balance: f64) -> Result<f64> {
         let handle = self.tenants.get_mut(id)
             .ok_or_else(|| anyhow!("Tenant {} not found", id))?;

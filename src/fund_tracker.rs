@@ -89,6 +89,7 @@ pub fn csv_path(tenant_id: &TenantId) -> Result<PathBuf> {
 /// Append a `FundEvent` to the tenant's CSV file.
 ///
 /// Creates the file (with header row) if it does not yet exist.
+#[allow(dead_code)]
 pub fn append(tenant_id: &TenantId, event: &FundEvent) -> Result<()> {
     let path     = csv_path(tenant_id)?;
     let is_new   = !path.exists();
@@ -200,6 +201,7 @@ pub fn total_withdrawn(tenant_id: &TenantId) -> f64 {
 /// Prevents spurious events caused by unrealised-PnL fluctuations being
 /// passed in as balance changes when only the *cleared* balance should be
 /// compared.
+#[allow(dead_code)]
 const MIN_DELTA: f64 = 1.0;
 
 /// Compare `old_balance` with `new_balance` and, if the delta exceeds
@@ -212,6 +214,7 @@ const MIN_DELTA: f64 = 1.0;
 /// The balances passed must represent the HL *cleared* (settled) balance
 /// — NOT the mark-to-market equity which fluctuates continuously with
 /// unrealised PnL.  This avoids recording phantom events every cycle.
+#[allow(dead_code)]
 pub fn detect_and_record(
     tenant_id:   &TenantId,
     old_balance: f64,
