@@ -532,6 +532,7 @@ async fn run_cycle(
                 rsi:        None,
                 regime:     None,
                 atr_pct:    None,
+                confidence: None,
             })
         }).collect();
         let mut s = bot_state.write().await;
@@ -590,7 +591,7 @@ async fn run_cycle(
     let total = candidates.len();
     let mut new_decisions: Vec<DecisionInfo> = Vec::new();
     // Collect per-symbol indicator snapshots to batch-update CandidateInfo at end of cycle.
-    let mut cand_indicators: Vec<(String, f64, &'static str, f64)> = Vec::new(); // (sym, rsi, regime, atr_pct)
+    let mut cand_indicators: Vec<(String, f64, &'static str, f64, f64)> = Vec::new(); // (sym, rsi, regime, atr_pct, confidence)
 
     for (i, sym) in candidates.iter().enumerate() {
         set_status(bot_state,
@@ -601,7 +602,7 @@ async fn run_cycle(
                 if dec.action != "SKIP" {
                     info!("💡 {} → {} conf={:.0}%", sym, dec.action, dec.confidence * 100.0);
                 }
-                cand_indicators.push((sym.clone(), ind.rsi, ind.regime, ind.atr_pct));
+                cand_indicators.push((sym.clone(), ind.rsi, ind.regime, ind.atr_pct, dec.confidence));
                 // Push ALL decisions (including SKIPs) so the signal feed always shows activity.
                 // SKIPs are rendered dimmed in the dashboard; BUY/SELL get the coloured treatment.
                 new_decisions.push(DecisionInfo {
@@ -622,11 +623,12 @@ async fn run_cycle(
     {
         let mut s = bot_state.write().await;
         // Write RSI / regime / ATR% back into the candidate list for the dashboard.
-        for (sym, rsi, regime, atr_pct) in &cand_indicators {
+        for (sym, rsi, regime, atr_pct, conf) in &cand_indicators {
             if let Some(c) = s.candidates.iter_mut().find(|c| c.symbol == *sym) {
-                c.rsi     = Some(*rsi);
-                c.regime  = Some(regime.to_string());
-                c.atr_pct = Some(*atr_pct);
+                c.rsi        = Some(*rsi);
+                c.regime     = Some(regime.to_string());
+                c.atr_pct    = Some(*atr_pct);
+                c.confidence = Some(*conf);
             }
         }
         s.recent_decisions.extend(new_decisions);

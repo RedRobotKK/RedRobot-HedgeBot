@@ -73,6 +73,9 @@ pub struct CandidateInfo {
     /// ATR(14) as % of price — a volatility proxy, None until first scan.
     #[serde(default)]
     pub atr_pct:         Option<f64>,
+    /// Decision confidence 0‒1 from the last analyse_symbol run, None until first scan.
+    #[serde(default)]
+    pub confidence:      Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -374,9 +377,27 @@ async fn dashboard_handler(State(state): State<SharedState>) -> Html<String> {
 
     // ── Candidates table ──────────────────────────────────────────────────
     let cand_rows: String = if s.candidates.is_empty() {
-        r#"<tr><td colspan="4" class="empty-td">Scanning…</td></tr>"#.to_string()
+        r#"<tr><td colspan="5" class="empty-td">Scanning…</td></tr>"#.to_string()
     } else {
-        s.candidates.iter().map(|c| {
+        // Sort: open positions first (most profitable at top), then rest by confidence desc.
+        let mut sorted: Vec<&CandidateInfo> = s.candidates.iter().collect();
+        sorted.sort_by(|a, b| {
+            let ap = s.positions.iter().find(|p| p.symbol == a.symbol);
+            let bp = s.positions.iter().find(|p| p.symbol == b.symbol);
+            match (ap, bp) {
+                (Some(ap), Some(bp)) =>
+                    bp.unrealised_pnl.partial_cmp(&ap.unrealised_pnl).unwrap_or(std::cmp::Ordering::Equal),
+                (Some(_), None)  => std::cmp::Ordering::Less,
+                (None, Some(_))  => std::cmp::Ordering::Greater,
+                (None, None)     => {
+                    let ac = a.confidence.unwrap_or(0.0);
+                    let bc = b.confidence.unwrap_or(0.0);
+                    bc.partial_cmp(&ac).unwrap_or(std::cmp::Ordering::Equal)
+                }
+            }
+        });
+
+        sorted.iter().map(|c| {
             let chg_td = match c.change_pct {
                 Some(pct) => {
                     let cc = if pct >= 0.0 { "#3fb950" } else { "#f85149" };
@@ -385,7 +406,25 @@ async fn dashboard_handler(State(state): State<SharedState>) -> Html<String> {
                 }
                 None => "<td style='color:var(--muted)'>—</td>".to_string(),
             };
-            let is_open   = s.positions.iter().any(|p| p.symbol == c.symbol);
+
+            // Find open position for this symbol (if any)
+            let open_pos = s.positions.iter().find(|p| p.symbol == c.symbol);
+            let is_open  = open_pos.is_some();
+
+            // P&L pill for open positions: green = in the money, red = out of money
+            let pnl_pill = if let Some(pos) = open_pos {
+                let pnl     = pos.unrealised_pnl;
+                let pnl_pct = if pos.size_usd > 0.0 { pnl / pos.size_usd * 100.0 } else { 0.0 };
+                let (pc, arrow) = if pnl >= 0.0 { ("#3fb950", "▲") } else { ("#f85149", "▼") };
+                let sign = if pnl >= 0.0 { "+" } else { "" };
+                format!(" <span style='font-size:.72em;color:{pc};background:{pc}18;\
+                          border:1px solid {pc}44;border-radius:3px;padding:0 4px;\
+                          white-space:nowrap'>{arrow} {sign}{pnl_pct:.1}%</span>")
+            } else {
+                String::new()
+            };
+
+            // Blue highlight for open positions
             let sym_style = if is_open { "font-weight:700;color:#58a6ff" } else { "" };
             let open_dot  = if is_open { " ●" } else { "" };
 
@@ -406,8 +445,8 @@ async fn dashboard_handler(State(state): State<SharedState>) -> Html<String> {
             // RSI cell: green <30 (oversold), red >70 (overbought), grey otherwise
             let rsi_td = match c.rsi {
                 Some(r) => {
-                    let (rc, label) = if r < 30.0 { ("#3fb950", "OS") }  // oversold
-                                      else if r > 70.0 { ("#f85149", "OB") }  // overbought
+                    let (rc, label) = if r < 30.0 { ("#3fb950", "OS") }
+                                      else if r > 70.0 { ("#f85149", "OB") }
                                       else { ("#8b949e", "") };
                     if label.is_empty() {
                         format!("<td style='color:{rc}'>{r:.0}</td>")
@@ -418,20 +457,33 @@ async fn dashboard_handler(State(state): State<SharedState>) -> Html<String> {
                 None => "<td style='color:var(--muted)'>—</td>".to_string(),
             };
 
+            // Confidence cell: colour-graded white→yellow→green
+            let conf_td = match c.confidence {
+                Some(cf) => {
+                    let pct = cf * 100.0;
+                    let cc  = if pct >= 70.0 { "#3fb950" } else if pct >= 55.0 { "#e3b341" } else { "#8b949e" };
+                    format!("<td style='color:{cc}'>{pct:.0}%</td>")
+                }
+                None => "<td style='color:var(--muted)'>—</td>".to_string(),
+            };
+
             format!("<tr>\
-                       <td style='{ss}'>{logo}{sym}{dot}{rbadge}</td>\
+                       <td style='{ss}'>{logo}{sym}{dot}{pnl}{rbadge}</td>\
                        <td>${price:.4}</td>\
                        {chg_td}\
                        {rsi_td}\
+                       {conf_td}\
                      </tr>",
                 ss      = sym_style,
                 logo    = c_logo,
                 sym     = c.symbol,
                 dot     = open_dot,
+                pnl     = pnl_pill,
                 rbadge  = regime_badge,
                 price   = c.price,
                 chg_td  = chg_td,
                 rsi_td  = rsi_td,
+                conf_td = conf_td,
             )
         }).collect()
     };
@@ -478,10 +530,11 @@ async fn dashboard_handler(State(state): State<SharedState>) -> Html<String> {
             } else {
                 (String::new(), d.rationale.clone())
             };
+            let sig_logo = coins::coin_logo_img(&d.symbol, 15);
             let delay_ms = i * 60;
             format!(
                 "<tr class='sig-row' style='animation-delay:{delay}ms;{rs}'>\
-                   <td>{icon} <b>{sym}</b></td>\
+                   <td>{logo}{icon} <b>{sym}</b></td>\
                    <td style='color:{dc};font-weight:600'>{ac}</td>\
                    <td>{conf:.0}%</td>\
                    <td class='ts' style='max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>{rbadge}{rat}</td>\
@@ -489,6 +542,7 @@ async fn dashboard_handler(State(state): State<SharedState>) -> Html<String> {
                  </tr>",
                 delay  = delay_ms,
                 rs     = row_style,
+                logo   = sig_logo,
                 icon   = icon,
                 sym    = d.symbol,
                 dc     = dc,
@@ -711,7 +765,7 @@ tr:hover td{{background:rgba(255,255,255,.03)}}
     <span>Candidates <span class="badge">{cand_n} scanned · ● = open</span></span>
   </div>
   <div class="tbl-wrap">
-    <table><tr><th>Symbol</th><th>Price</th><th>Session Δ</th><th title="RSI(14): &lt;30 oversold · &gt;70 overbought">RSI</th></tr>{cand_rows}</table>
+    <table><tr><th>Symbol</th><th>Price</th><th>Session Δ</th><th title="RSI(14): &lt;30 oversold · &gt;70 overbought">RSI</th><th title="Signal confidence from last scan">Conf</th></tr>{cand_rows}</table>
   </div>
   {wh}
 </div>
