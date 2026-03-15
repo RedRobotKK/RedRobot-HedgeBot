@@ -223,9 +223,10 @@ async fn main() -> Result<()> {
             stripe_api_key:        config.stripe_secret_key.clone(),
             stripe_webhook_secret: config.stripe_webhook_secret.clone(),
             stripe_price_id:       config.stripe_price_id.clone(),
-            privy_app_id:          config.privy_app_id.clone(),
-            session_secret:        config.session_secret.clone(),
-            jwks_cache:            privy::new_jwks_cache(),
+            privy_app_id:           config.privy_app_id.clone(),
+            session_secret:         config.session_secret.clone(),
+            jwks_cache:             privy::new_jwks_cache(),
+            apple_pay_domain_assoc: config.apple_pay_domain_assoc.clone(),
         };
         tokio::spawn(async move {
             if let Err(e) = web_dashboard::serve(app_state, 3000).await {

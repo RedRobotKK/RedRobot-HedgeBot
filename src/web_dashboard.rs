@@ -34,6 +34,12 @@ pub struct AppState {
     pub session_secret:        String,
     /// In-memory cache of Privy's JWKS — refreshed every hour on first use.
     pub jwks_cache:            crate::privy::SharedJwksCache,
+    /// Apple Pay domain-association file content.
+    /// Obtained from Stripe Dashboard → Settings → Payment methods → Apple Pay
+    /// → Add new domain → Download file.
+    /// When set, served at `/.well-known/apple-developer-merchantid-domain-association`
+    /// so Apple can verify the domain before showing the Apple Pay button.
+    pub apple_pay_domain_assoc: Option<String>,
 }
 
 // ─────────────────────────────── Serde defaults ──────────────────────────────
@@ -1843,6 +1849,44 @@ import('https://esm.sh/@privy-io/js-sdk-core@latest')
     axum::response::Html(body)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Apple Pay domain verification
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `GET /.well-known/apple-developer-merchantid-domain-association`
+///
+/// Serves the Apple Pay domain-association file so Apple's servers can verify
+/// that this domain is allowed to initiate Apple Pay transactions.
+///
+/// ## Setup (one-time, ~2 minutes)
+///
+/// 1. Stripe Dashboard → Settings → Payment methods → Apple Pay
+/// 2. Click **Add new domain**, enter your domain.
+/// 3. Stripe shows a verification file — copy its *contents* (not the URL).
+/// 4. Set `APPLE_PAY_DOMAIN_ASSOC=<file contents>` in your `.env`.
+/// 5. Deploy.  Apple Pay button appears automatically in Stripe Checkout on
+///    Safari / iOS for your domain.
+///
+/// Google Pay requires no domain verification — it is automatically enabled
+/// in Stripe Checkout when the user's device supports it.
+async fn apple_pay_domain_handler(
+    State(app): State<AppState>,
+) -> impl axum::response::IntoResponse {
+    use axum::http::StatusCode;
+    match &app.apple_pay_domain_assoc {
+        Some(content) => (
+            StatusCode::OK,
+            [("Content-Type", "text/plain; charset=utf-8")],
+            content.clone(),
+        ).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            "Apple Pay domain association file not configured.\n\
+             Set APPLE_PAY_DOMAIN_ASSOC in your environment.",
+        ).into_response(),
+    }
+}
+
 pub async fn serve(app_state: AppState, port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let app = Router::new()
         .route("/", get(dashboard_handler))
@@ -1860,6 +1904,9 @@ pub async fn serve(app_state: AppState, port: u16) -> Result<(), Box<dyn std::er
         .route("/login",                get(login_handler))
         .route("/auth/session",         post(auth_session_handler))
         .route("/auth/logout",          get(auth_logout_handler))
+        // ── Apple Pay domain verification ───────────────────────────────────
+        .route("/.well-known/apple-developer-merchantid-domain-association",
+                                        get(apple_pay_domain_handler))
         .with_state(app_state);
     let addr = format!("0.0.0.0:{}", port);
     log::info!("🌐 Dashboard at http://{}", addr);

@@ -58,6 +58,13 @@ pub struct Config {
     /// only until the next server restart in that case).
     pub session_secret:  String,
 
+    // Apple Pay — domain verification
+    /// Contents of the Apple Pay domain-association file from Stripe Dashboard.
+    /// Served at `/.well-known/apple-developer-merchantid-domain-association`.
+    /// Get it: Stripe Dashboard → Settings → Payment methods → Apple Pay →
+    /// Add new domain → copy the file contents into this env var.
+    pub apple_pay_domain_assoc: Option<String>,
+
     // Affiliate — Hyperliquid referral code
     /// Referral slug registered at app.hyperliquid.xyz (e.g. "REDROBOT").
     /// Displayed in the consumer /app page so new users sign up via our link.
@@ -123,6 +130,7 @@ impl Config {
             privy_app_id:               env::var("PRIVY_APP_ID").ok(),
             session_secret:             env::var("SESSION_SECRET")
                 .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string()),
+            apple_pay_domain_assoc:     env::var("APPLE_PAY_DOMAIN_ASSOC").ok(),
             lunarcrush_api_key:         env::var("LUNARCRUSH_API_KEY")
                 .unwrap_or_else(|_| "77c4fcm050bnxe49qo1h2n252umls0rrtkevh5uni".to_string()),
             anthropic_api_key:          env::var("ANTHROPIC_API_KEY").ok(),
