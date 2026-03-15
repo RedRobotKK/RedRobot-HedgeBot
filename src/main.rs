@@ -73,6 +73,7 @@ use metrics::PerformanceMetrics;
 use sentiment::{SentimentCache, SharedSentiment};
 use funding::{FundingCache, SharedFunding};
 use trade_log::{SharedTradeLogger, TradeEvent, TradeLogger, ts_now, date_today};
+use db::{AumSnapshot, Database, SharedDb};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  ERROR CLASSIFICATION – human-friendly cycle error messages
@@ -164,7 +165,39 @@ async fn main() -> Result<()> {
     let config = config::Config::from_env()?;
     info!("✓ Config: mode={:?}  capital=${:.0}  paper={}", config.mode, config.initial_capital, config.paper_trading);
 
-    let db     = Arc::new(db::Database::new(&config.database_url).await?);
+    // ── PostgreSQL — connect and migrate, gracefully degrade if unavailable ──
+    let shared_db: Option<SharedDb> = if config.database_url.starts_with("postgres") {
+        match Database::connect(&config.database_url).await {
+            Ok(database) => {
+                info!("✅ PostgreSQL connected and migrations applied");
+                // Spawn hourly maintenance task (prune old snapshots, ANALYZE).
+                let db_maint = Arc::new(database);
+                let db_for_maint = db_maint.clone();
+                tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(
+                        std::time::Duration::from_secs(3600)
+                    );
+                    interval.tick().await; // skip the first immediate tick
+                    loop {
+                        interval.tick().await;
+                        if let Err(e) = db_for_maint.run_maintenance().await {
+                            log::warn!("DB maintenance failed: {e}");
+                        }
+                    }
+                });
+                Some(db_maint)
+            }
+            Err(e) => {
+                warn!("⚠ PostgreSQL unavailable — running without persistence: {e}");
+                warn!("  Set DATABASE_URL=postgresql://redrobot:<pass>@localhost/redrobot to enable");
+                None
+            }
+        }
+    } else {
+        info!("ℹ DATABASE_URL is not a PostgreSQL URL — persistence disabled");
+        None
+    };
+
     let market = Arc::new(data::MarketClient::new());
     let hl     = Arc::new(exchange::HyperliquidClient::new(&config)?);
 
@@ -221,6 +254,7 @@ async fn main() -> Result<()> {
         let app_state = web_dashboard::AppState {
             bot_state:             bot_state.clone(),
             tenants:               tenant::new_tenant_manager(),
+            db:                    shared_db.clone(),
             stripe_api_key:        config.stripe_secret_key.clone(),
             stripe_webhook_secret: config.stripe_webhook_secret.clone(),
             stripe_price_id:       config.stripe_price_id.clone(),
@@ -279,7 +313,7 @@ async fn main() -> Result<()> {
 
         set_status(&bot_state, "📡 Fetching prices…").await;
 
-        match run_cycle(&config, &market, &hl, &db, &bot_state, &weights,
+        match run_cycle(&config, &market, &hl, &shared_db, &bot_state, &weights,
                         &sentiment_cache, &funding_cache, &mut prev_mids, &btc_dominance,
                         &trade_logger).await
         {
@@ -347,7 +381,7 @@ async fn run_cycle(
     config:          &config::Config,
     market:          &Arc<data::MarketClient>,
     hl:              &Arc<exchange::HyperliquidClient>,
-    db:              &Arc<db::Database>,
+    db:              &Option<SharedDb>,
     bot_state:       &SharedState,
     weights:         &SharedWeights,
     sent_cache:      &SharedSentiment,
@@ -420,6 +454,53 @@ async fn run_cycle(
         if s.equity_history.len() > 288 { s.equity_history.remove(0); }
 
         for pos in s.positions.iter_mut() { pos.cycles_held += 1; }
+
+        // ── PostgreSQL: equity snapshot ───────────────────────────────────
+        // Persist one equity data point per cycle. Tenant ID is "operator"
+        // in single-op mode; will be per-tenant in multi-tenant phase.
+        // Fire-and-forget — a DB write failure must never crash the cycle.
+        if let Some(db) = db {
+            let equity_copy = equity;
+            let db_clone    = db.clone();
+            tokio::spawn(async move {
+                if let Err(e) = db_clone.insert_equity_snapshot("00000000-0000-0000-0000-000000000001", equity_copy).await {
+                    log::debug!("equity_snapshot write skipped: {e}");
+                }
+            });
+        }
+
+        // ── PostgreSQL: AUM snapshot (pre-aggregated for admin + landing page) ──
+        // In single-operator mode total_aum == operator equity.
+        // In multi-tenant mode this will sum across all tenants.
+        let initial_capital = s.initial_capital;
+        let open_positions  = s.positions.len() as i32;
+        // Today's trade stats come from the trade_logger day_stats (not ClosedTrade
+        // strings which only carry HH:MM:SS without a date).  For now we emit
+        // zeroes; the DB can compute accurate daily stats via a SQL query.
+        let closed_today: i32    = 0;
+        let win_rate_today: Option<f64> = None;
+
+        if let Some(db) = db {
+            let total_pnl = equity - initial_capital;
+            let pnl_pct   = if initial_capital > 0.0 { total_pnl / initial_capital * 100.0 } else { 0.0 };
+            let snap = AumSnapshot {
+                total_aum:            equity,
+                deposited_capital:    initial_capital,
+                total_pnl,
+                pnl_pct,
+                active_tenant_count:  if open_positions > 0 { 1 } else { 0 },
+                total_tenant_count:   1,
+                open_position_count:  open_positions,
+                total_trades_today:   closed_today,
+                win_rate_today,
+            };
+            let db_clone = db.clone();
+            tokio::spawn(async move {
+                if let Err(e) = db_clone.insert_aum_snapshot(&snap).await {
+                    log::debug!("aum_snapshot write skipped: {e}");
+                }
+            });
+        }
     }
 
     // ── Position management: P&L, trailing stops, exit signals ───────────
@@ -883,7 +964,7 @@ async fn analyse_symbol(
     symbol:       &str,
     market:       &Arc<data::MarketClient>,
     hl:           &Arc<exchange::HyperliquidClient>,
-    db:           &Arc<db::Database>,
+    db:           &Option<SharedDb>,
     config:       &config::Config,
     bot_state:    &SharedState,
     weights:      &SharedWeights,
@@ -990,7 +1071,7 @@ async fn analyse_symbol(
         if risk::should_trade(&dec, &account)? {
             let capital = bot_state.read().await.capital;
             match hl.place_order(symbol, &dec, capital).await {
-                Ok(id) => { info!("✅ {} {} @ ${:.4} [{}]", dec.action, symbol, dec.entry_price, id); db.log_trade(&dec, &id).await.ok(); }
+                Ok(id) => { info!("✅ {} {} @ ${:.4} [{}]", dec.action, symbol, dec.entry_price, id); }
                 Err(e) => error!("❌ Order failed {}: {}", symbol, e),
             }
         }

@@ -21,6 +21,9 @@ pub struct AppState {
     pub bot_state:             SharedState,
     /// Registry of all consumer tenants — mutated by Stripe webhooks.
     pub tenants:               crate::tenant::SharedTenantManager,
+    /// PostgreSQL connection pool — `None` when DATABASE_URL is not set.
+    /// Shared across all Axum handlers and the trading loop.
+    pub db:                    Option<crate::db::SharedDb>,
     /// Stripe secret API key (sk_live_… / sk_test_…).
     pub stripe_api_key:        Option<String>,
     /// Stripe webhook signing secret (whsec_…).
@@ -2597,6 +2600,170 @@ async fn apple_pay_domain_handler(
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Public TVL API — no auth required, powers landing page hero graph
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// `GET /api/public/tvl`
+///
+/// Returns the last 90 days of AUM snapshots as JSON.
+/// Used by the landing page to render the TVL hero graph client-side.
+/// No authentication required — returns aggregate data only, never per-tenant.
+async fn public_tvl_handler(
+    State(app): State<AppState>,
+) -> impl axum::response::IntoResponse {
+    use axum::http::{HeaderMap, StatusCode};
+
+    let mut headers = HeaderMap::new();
+    // Allow embedding in the landing page (different origin during dev).
+    headers.insert("Access-Control-Allow-Origin", "*".parse().unwrap());
+    headers.insert("Cache-Control", "public, max-age=60".parse().unwrap());
+
+    let Some(db) = &app.db else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            headers,
+            axum::Json(serde_json::json!({
+                "error": "database not yet configured",
+                "points": [],
+            })),
+        );
+    };
+
+    let points = match db.get_aum_history(90).await {
+        Ok(p)  => p,
+        Err(e) => {
+            log::warn!("public_tvl_handler: DB error: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                headers,
+                axum::Json(serde_json::json!({ "error": "query failed", "points": [] })),
+            );
+        }
+    };
+
+    // Pull the latest snapshot for the headline numbers.
+    let latest = db.get_latest_aum().await.ok().flatten();
+
+    let response = serde_json::json!({
+        "generated_at":    chrono::Utc::now().to_rfc3339(),
+        "window_days":     90,
+        "point_count":     points.len(),
+        "latest": latest.as_ref().map(|a| serde_json::json!({
+            "total_aum":         a.total_aum,
+            "deposited_capital": a.deposited_capital,
+            "total_pnl":         a.total_pnl,
+            "pnl_pct":           a.pnl_pct,
+            "active_tenants":    a.active_tenants,
+            "total_tenants":     a.total_tenants,
+            "open_positions":    a.open_positions,
+            "recorded_at":       a.recorded_at.to_rfc3339(),
+        })),
+        "points": points.iter().map(|p| serde_json::json!({
+            "ts":          p.recorded_at.to_rfc3339(),
+            "aum":         p.total_aum,
+            "pnl":         p.total_pnl,
+            "pnl_pct":     p.pnl_pct,
+            "tenants":     p.active_tenants,
+            "positions":   p.open_positions,
+        })).collect::<Vec<_>>(),
+    });
+
+    (StatusCode::OK, headers, axum::Json(response))
+}
+
+/// `GET /api/public/tvl/svg`
+///
+/// Returns a self-contained SVG sparkline of the TVL curve.
+/// Embed directly in the landing page `<img src="/api/public/tvl/svg">` —
+/// no JavaScript required.  Auto-updates every 60 seconds via HTTP cache.
+async fn public_tvl_svg_handler(
+    State(app): State<AppState>,
+) -> impl axum::response::IntoResponse {
+    use axum::http::{HeaderMap, StatusCode};
+
+    let mut headers = HeaderMap::new();
+    headers.insert("Content-Type", "image/svg+xml".parse().unwrap());
+    headers.insert("Cache-Control", "public, max-age=60".parse().unwrap());
+    headers.insert("Access-Control-Allow-Origin", "*".parse().unwrap());
+
+    let placeholder_svg = r##"<svg width="480" height="80" viewBox="0 0 480 80"
+         xmlns="http://www.w3.org/2000/svg"
+         style="background:#0d1117;border-radius:8px">
+  <text x="240" y="45" text-anchor="middle" fill="#484f58"
+        font-family="system-ui,sans-serif" font-size="13">
+    Accumulating data…
+  </text>
+</svg>"##;
+
+    let Some(db) = &app.db else {
+        return (StatusCode::OK, headers, placeholder_svg.to_string());
+    };
+
+    let points = match db.get_aum_history(90).await {
+        Ok(p) if p.len() >= 2 => p,
+        _ => return (StatusCode::OK, headers, placeholder_svg.to_string()),
+    };
+
+    // Build SVG using the same proven pattern as the equity sparkline.
+    let w_px: f64 = 480.0;
+    let h_px: f64 = 80.0;
+    let pad:  f64 = 8.0;
+    let inner_h   = h_px - 2.0 * pad;
+
+    let values: Vec<f64> = points.iter().map(|p| p.total_aum).collect();
+    let deposited = points.first().map(|p| p.deposited_capital).unwrap_or(0.0);
+
+    let data_min = values.iter().cloned().fold(f64::INFINITY, f64::min).min(deposited);
+    let data_max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max).max(deposited);
+    let buf   = ((data_max - data_min).max(deposited * 0.002)) * 0.15;
+    let min_v = data_min - buf;
+    let max_v = data_max + buf;
+    let range = (max_v - min_v).max(0.01);
+
+    let to_y = |v: f64| h_px - pad - (v - min_v) / range * inner_h;
+
+    let n = values.len() as f64;
+    let pts: String = values.iter().enumerate().map(|(i, &v)| {
+        let x = i as f64 / (n - 1.0) * w_px;
+        let y = to_y(v);
+        format!("{x:.1},{y:.1}")
+    }).collect::<Vec<_>>().join(" ");
+
+    let base_y  = to_y(deposited);
+    let last_y  = to_y(*values.last().unwrap());
+    let last_v  = *values.last().unwrap();
+    let trend_c = if last_v >= deposited { "#3fb950" } else { "#f85149" };
+    let fill_pts = format!("{pts} {w_px:.1},{base_y:.1} 0.0,{base_y:.1}");
+
+    let latest_pnl_pct = points.last().map(|p| p.pnl_pct).unwrap_or(0.0);
+    let pnl_sign = if latest_pnl_pct >= 0.0 { "+" } else { "" };
+    let label = format!("{pnl_sign}{latest_pnl_pct:.1}% all-time");
+
+    let svg = format!(
+        r##"<svg width="480" height="80" viewBox="0 0 480 80"
+     xmlns="http://www.w3.org/2000/svg"
+     style="background:#0d1117;border-radius:8px;display:block">
+  <line x1="0" y1="{by:.1}" x2="480" y2="{by:.1}"
+        stroke="{c}" stroke-width="0.8" stroke-dasharray="3 3" stroke-opacity="0.4"/>
+  <polygon points="{fp}" fill="{c}" fill-opacity="0.12"/>
+  <polyline points="{pts}" fill="none" stroke="{c}"
+            stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <circle cx="480" cy="{ly:.1}" r="4" fill="{c}"/>
+  <text x="8" y="20" font-family="system-ui,sans-serif" font-size="11"
+        fill="{c}" font-weight="600">{label}</text>
+</svg>"##,
+        c   = trend_c,
+        by  = base_y,
+        fp  = fill_pts,
+        pts = pts,
+        ly  = last_y,
+        label = label,
+    );
+
+    (StatusCode::OK, headers, svg)
+}
+
 pub async fn serve(app_state: AppState, port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let app = Router::new()
         .route("/", get(dashboard_handler))
@@ -2626,6 +2793,10 @@ pub async fn serve(app_state: AppState, port: u16) -> Result<(), Box<dyn std::er
         // ── Apple Pay domain verification ───────────────────────────────────
         .route("/.well-known/apple-developer-merchantid-domain-association",
                                         get(apple_pay_domain_handler))
+        // ── Public API — no auth, rate-limited at the nginx level ──────────
+        // Used by the landing page TVL hero graph and external integrations.
+        .route("/api/public/tvl",       get(public_tvl_handler))
+        .route("/api/public/tvl/svg",   get(public_tvl_svg_handler))
         .with_state(app_state);
     let addr = format!("0.0.0.0:{}", port);
     log::info!("🌐 Dashboard at http://{}", addr);

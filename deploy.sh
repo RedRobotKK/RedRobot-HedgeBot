@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# deploy.sh – push to GitHub, pull & build on VPS, restart via systemd
+# deploy.sh – provision infrastructure, push to GitHub, build & restart on VPS
+#
 # Usage:
 #   ./deploy.sh              – full deploy (CI gate + push to GitHub + build + restart)
 #   ./deploy.sh --vps-only   – skip git push, just pull/build/restart on VPS
@@ -8,21 +9,24 @@
 #   ./deploy.sh --test-only  – run CI quality gate on VPS without deploying
 #   ./deploy.sh --no-test    – skip CI gate (emergency deploys only)
 #   ./deploy.sh --no-log-push – skip uploading CI log to GitHub
+#   ./deploy.sh --provision  – (re)run full server provisioning only
 #
 # CI Quality Gate (runs before every build):
-#   1. cargo test --all        – all unit + integration tests must pass
+#   1. cargo test --all         – all unit + integration tests must pass
 #   2. cargo clippy -D warnings – no compiler warnings or lints
-#   3. cargo audit             – no known CVEs in dependencies (RustSec DB)
+#   3. cargo audit              – no known CVEs in dependencies (RustSec DB)
 #   Deploy is BLOCKED if any of the above fail.
 #
+# Infrastructure provisioned by --provision (idempotent, safe to re-run):
+#   PostgreSQL 16  – installed, redrobot DB + user created, pg_hba patched
+#   sqlx-cli       – schema migrations run automatically on every deploy
+#   Ollama         – installed, llama3.2 pulled, systemd service enabled
+#   MCP server     – @modelcontextprotocol/server-postgres for Claude DB access
+#
 # Logs:
-#   Every CI run appends a full timestamped report to:
-#     /var/log/hedgebot-ci.log      (on VPS — CI gate output, persistent)
-#     /var/log/hedgebot-deploy.log  (on VPS — build + restart output)
-#   After each run the CI log for that run is also:
-#     SCP'd back locally → committed to logs/ci/ → pushed to GitHub
-#     Browse at: https://github.com/<org>/<repo>/tree/master/logs/ci/
-#   On failure, the last 60 lines of the CI log are printed automatically.
+#   /var/log/hedgebot-ci.log      (CI gate output, persistent)
+#   /var/log/hedgebot-deploy.log  (build + restart output)
+#   CI logs also pushed to GitHub: logs/ci/
 
 set -euo pipefail
 
@@ -52,7 +56,8 @@ DO_PUSH=true
 DO_DEPLOY=true
 DO_BUILD=true
 DO_TEST=true
-DO_LOG_PUSH=true   # upload CI log to GitHub after each run
+DO_LOG_PUSH=true     # upload CI log to GitHub after each run
+DO_PROVISION=false   # --provision: run full infrastructure setup
 
 for arg in "$@"; do
   case $arg in
@@ -62,8 +67,9 @@ for arg in "$@"; do
     --test-only)   DO_PUSH=false; DO_BUILD=false ;;
     --no-test)     DO_TEST=false; warn "--no-test: skipping CI gate (emergency mode)" ;;
     --no-log-push) DO_LOG_PUSH=false ;;
+    --provision)   DO_PROVISION=true; DO_PUSH=false; DO_BUILD=false; DO_TEST=false ;;
     --help|-h)
-      echo "Usage: $0 [--vps-only | --push-only | --restart | --test-only | --no-test | --no-log-push]"
+      echo "Usage: $0 [--vps-only | --push-only | --restart | --test-only | --no-test | --no-log-push | --provision]"
       echo "  (no flags)     full deploy: CI gate + push to GitHub + build + restart VPS"
       echo "  --vps-only     skip GitHub push, just CI gate + build & restart on VPS"
       echo "  --push-only    push to GitHub only, don't touch VPS"
@@ -71,10 +77,232 @@ for arg in "$@"; do
       echo "  --test-only    run CI quality gate on VPS only (no build/restart)"
       echo "  --no-test      skip CI gate (emergency deploys only)"
       echo "  --no-log-push  skip uploading CI log to GitHub"
+      echo "  --provision    run full server setup (PostgreSQL + Ollama + MCP) — idempotent"
       exit 0 ;;
     *) error "Unknown argument: $arg"; exit 1 ;;
   esac
 done
+
+# ── 0. Infrastructure provisioning (--provision or first-run check) ───────────
+# This block is intentionally run BEFORE the git push so the database is ready
+# when the newly built binary starts. Idempotent — safe to run on every deploy.
+if $DO_PROVISION || $DO_DEPLOY; then
+  SSH="ssh -o ConnectTimeout=10 -o BatchMode=yes ${VPS_USER}@${VPS_IP}"
+
+  if $DO_PROVISION; then
+    header "Server Provisioning  (PostgreSQL + Ollama + MCP)"
+  fi
+
+  $SSH bash <<'PROVISION'
+    set -euo pipefail
+    export DEBIAN_FRONTEND=noninteractive
+
+    RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; RESET='\033[0m'
+    ok()  { echo -e "${GREEN}✓ $*${RESET}"; }
+    inf() { echo -e "${CYAN}▸ $*${RESET}"; }
+
+    # ── PostgreSQL 16 ──────────────────────────────────────────────────────────
+    # We use the official PGDG repo to guarantee PostgreSQL 16 regardless of
+    # the Ubuntu LTS version.  Ubuntu 22.04 ships with PG 14 by default.
+    inf "PostgreSQL 16..."
+    if ! command -v psql &>/dev/null || ! psql --version | grep -q "16\|17"; then
+      inf "Installing PostgreSQL 16 from PGDG..."
+      apt-get install -y curl ca-certificates gnupg lsb-release
+      # Add PGDG signing key
+      curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+        | gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+      # Add PGDG repo
+      CODENAME=$(lsb_release -cs)
+      echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] \
+            https://apt.postgresql.org/pub/repos/apt ${CODENAME}-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list
+      apt-get update -q
+      apt-get install -y postgresql-16 postgresql-client-16
+      ok "PostgreSQL 16 installed"
+    else
+      ok "PostgreSQL already installed: $(psql --version | head -1)"
+    fi
+
+    # Ensure PostgreSQL is running and enabled at boot
+    systemctl enable postgresql --quiet
+    systemctl start  postgresql
+    sleep 1
+    ok "PostgreSQL service running"
+
+    # ── Database user & database (idempotent) ──────────────────────────────────
+    # Generate a stable password from the server hostname so it's reproducible
+    # on reprovisioning. In production, override DB_PASSWORD in /etc/environment.
+    DB_PASSWORD="${DB_PASSWORD:-$(hostname | sha256sum | cut -c1-32)}"
+
+    # Create role if it doesn't exist (DO $$ avoids error on re-run)
+    sudo -u postgres psql -c "
+      DO \$\$
+      BEGIN
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'redrobot') THEN
+          CREATE ROLE redrobot WITH LOGIN PASSWORD '${DB_PASSWORD}';
+          RAISE NOTICE 'Created role redrobot';
+        ELSE
+          ALTER ROLE redrobot WITH PASSWORD '${DB_PASSWORD}';
+          RAISE NOTICE 'Updated password for existing role redrobot';
+        END IF;
+      END \$\$;
+    " 2>&1 | grep -v "^$"
+
+    # Create database if it doesn't exist
+    sudo -u postgres psql -c "
+      SELECT 'CREATE DATABASE redrobot OWNER redrobot'
+      WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'redrobot')
+    \gexec" 2>&1 | grep -v "^$"
+
+    ok "PostgreSQL: role=redrobot database=redrobot"
+
+    # ── pg_hba.conf: allow password auth over localhost TCP ───────────────────
+    # PostgreSQL defaults to 'peer' auth for local Unix sockets, which means
+    # the 'root' OS user can't authenticate as 'redrobot'.  We allow md5 auth
+    # over the loopback interface so the Rust binary can connect normally.
+    PG_HBA=$(sudo -u postgres psql -tAc "SHOW hba_file")
+    if ! grep -q "redrobot" "${PG_HBA}" 2>/dev/null; then
+      # Prepend our rules (first match wins in pg_hba.conf)
+      TMP=$(mktemp)
+      {
+        echo "# RedRobot — allow password auth over loopback"
+        echo "host    redrobot    redrobot    127.0.0.1/32    md5"
+        echo "host    redrobot    redrobot    ::1/128         md5"
+        cat "${PG_HBA}"
+      } > "${TMP}"
+      cp "${TMP}" "${PG_HBA}"
+      rm "${TMP}"
+      sudo -u postgres pg_ctlcluster 16 main reload 2>/dev/null \
+        || systemctl reload postgresql \
+        || systemctl restart postgresql
+      ok "pg_hba.conf: TCP md5 auth added for redrobot"
+    else
+      ok "pg_hba.conf: redrobot rules already present"
+    fi
+
+    # ── Write DATABASE_URL to /etc/environment ────────────────────────────────
+    # /etc/environment is sourced by systemd EnvironmentFile= directive in the
+    # hedgebot.service unit.  We only write if not already present.
+    if ! grep -q "^DATABASE_URL=" /etc/environment 2>/dev/null; then
+      echo "DATABASE_URL=postgresql://redrobot:${DB_PASSWORD}@127.0.0.1/redrobot" \
+        >> /etc/environment
+      ok "DATABASE_URL written to /etc/environment"
+    else
+      ok "DATABASE_URL already in /etc/environment"
+    fi
+
+    # ── Verify connection ──────────────────────────────────────────────────────
+    source /etc/environment
+    if PGPASSWORD="${DB_PASSWORD}" psql \
+        -h 127.0.0.1 -U redrobot -d redrobot -c "SELECT version();" &>/dev/null; then
+      ok "PostgreSQL connection verified: redrobot@127.0.0.1/redrobot"
+    else
+      echo -e "${RED}✗ Cannot connect as redrobot — check pg_hba.conf and password${RESET}"
+      echo "  Run: PGPASSWORD='${DB_PASSWORD}' psql -h 127.0.0.1 -U redrobot redrobot"
+    fi
+
+    # ── sqlx-cli: run schema migrations ───────────────────────────────────────
+    # sqlx migrate run reads ./migrations/*.sql and applies any not yet tracked
+    # in the _sqlx_migrations table.  Idempotent.
+    export PATH="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+    source "$HOME/.cargo/env" 2>/dev/null || true
+
+    if ! command -v sqlx &>/dev/null; then
+      inf "Installing sqlx-cli..."
+      cargo install sqlx-cli --no-default-features --features postgres 2>&1 | tail -3
+      ok "sqlx-cli installed"
+    else
+      ok "sqlx-cli: $(sqlx --version 2>/dev/null || echo 'installed')"
+    fi
+
+    cd /RedRobot-HedgeBot
+    source /etc/environment
+    sqlx migrate run --database-url "${DATABASE_URL}" 2>&1 \
+      && ok "Migrations applied" \
+      || echo "⚠ Migration run failed — will be retried on bot startup"
+
+    # ── Node.js: for MCP server ────────────────────────────────────────────────
+    if ! command -v node &>/dev/null; then
+      inf "Installing Node.js LTS..."
+      curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
+      apt-get install -y nodejs
+      ok "Node.js $(node --version) installed"
+    else
+      ok "Node.js: $(node --version)"
+    fi
+
+    # ── PostgreSQL MCP server — gives Claude direct DB query access ───────────
+    # The MCP server runs as a subprocess of Claude Desktop (not a daemon).
+    # We install it globally so Claude can launch it on demand.
+    if ! npm list -g @modelcontextprotocol/server-postgres &>/dev/null; then
+      inf "Installing PostgreSQL MCP server..."
+      npm install -g @modelcontextprotocol/server-postgres 2>&1 | tail -3
+      ok "MCP server installed: $(npm list -g @modelcontextprotocol/server-postgres 2>/dev/null | grep server-postgres || echo 'ok')"
+    else
+      ok "PostgreSQL MCP server already installed"
+    fi
+
+    # ── Ollama — local LLM inference ──────────────────────────────────────────
+    # Ollama enables on-device LLM analysis of trade data without Anthropic API
+    # costs. The bot's db::query_ollama() function calls http://localhost:11434.
+    if ! command -v ollama &>/dev/null; then
+      inf "Installing Ollama..."
+      curl -fsSL https://ollama.com/install.sh | sh
+      ok "Ollama installed"
+    else
+      ok "Ollama: $(ollama --version 2>/dev/null || echo 'installed')"
+    fi
+
+    # Enable Ollama as a systemd service so it survives reboots
+    systemctl enable ollama --quiet 2>/dev/null || true
+    systemctl start  ollama 2>/dev/null || true
+    sleep 3
+
+    # Write Ollama URL to /etc/environment
+    if ! grep -q "^OLLAMA_BASE_URL=" /etc/environment 2>/dev/null; then
+      echo "OLLAMA_BASE_URL=http://localhost:11434" >> /etc/environment
+      ok "OLLAMA_BASE_URL written to /etc/environment"
+    fi
+
+    # Pull the default model if not already present.
+    # llama3.2 (3B params) is a good balance: fast on CPU VPS, quality reasoning.
+    # For a GPU VPS, consider mistral-7b or llama3.1-8b.
+    if ollama list 2>/dev/null | grep -q "llama3.2"; then
+      ok "Ollama model llama3.2 already pulled"
+    else
+      inf "Pulling Ollama model llama3.2 (~2 GB download, first run only)..."
+      ollama pull llama3.2 2>&1 | tail -5 \
+        && ok "llama3.2 model ready" \
+        || echo "⚠ Model pull failed — run: ollama pull llama3.2"
+    fi
+
+    # ── Summary ────────────────────────────────────────────────────────────────
+    echo ""
+    echo "════════════════════════════════════════════════════════════════"
+    echo "Provisioning complete"
+    echo "────────────────────────────────────────────────────────────────"
+    echo "  PostgreSQL : $(psql --version | head -1)"
+    echo "  Database   : redrobot @ 127.0.0.1"
+    echo "  Ollama     : $(ollama --version 2>/dev/null || echo 'installed')"
+    echo "  MCP server : $(npm list -g @modelcontextprotocol/server-postgres 2>/dev/null | grep server-postgres || echo 'ok')"
+    echo "────────────────────────────────────────────────────────────────"
+    source /etc/environment 2>/dev/null || true
+    echo "  DATABASE_URL   = ${DATABASE_URL:-NOT SET}"
+    echo "  OLLAMA_BASE_URL= ${OLLAMA_BASE_URL:-NOT SET}"
+    echo "════════════════════════════════════════════════════════════════"
+    echo ""
+    echo "Next step: configure Claude MCP on your local machine."
+    echo "Run: cat /RedRobot-HedgeBot/CLAUDE_MCP_SETUP.md"
+PROVISION
+
+  if $DO_PROVISION; then
+    success "Provisioning complete — infrastructure ready"
+    # If --provision was the only flag, don't proceed to the deploy steps.
+    if ! $DO_DEPLOY; then
+      exit 0
+    fi
+  fi
+fi
 
 # ── 1. Git push ───────────────────────────────────────────────────────────────
 if $DO_PUSH; then
@@ -299,7 +527,29 @@ ENDSSH
     success "CI quality gate passed (tests ✓  clippy ✓  audit ✓)"
   fi
 
-  # ── 2c. Build ─────────────────────────────────────────────────────────────
+  # ── 2c. Run pending migrations ───────────────────────────────────────────
+  # Migrations run BEFORE the binary is built so the DB schema is always at
+  # the right version even if the build fails and the old binary keeps running.
+  $SSH bash <<'MIGR'
+    set -euo pipefail
+    export PATH="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+    source "$HOME/.cargo/env" 2>/dev/null || true
+    source /etc/environment 2>/dev/null || true
+
+    if [ -z "${DATABASE_URL:-}" ]; then
+      echo "⚠ DATABASE_URL not set — skipping migrations (run ./deploy.sh --provision first)"
+    elif command -v sqlx &>/dev/null; then
+      cd /RedRobot-HedgeBot
+      echo "▸ Running sqlx migrations…"
+      sqlx migrate run --database-url "${DATABASE_URL}" \
+        && echo "✓ Migrations applied" \
+        || echo "⚠ Migration failed — check DB connection"
+    else
+      echo "⚠ sqlx-cli not installed — run ./deploy.sh --provision"
+    fi
+MIGR
+
+  # ── 2d. Build ─────────────────────────────────────────────────────────────
   if $DO_BUILD; then
     header "cargo build --release"
     info "This takes ~2 min on the VPS…"
