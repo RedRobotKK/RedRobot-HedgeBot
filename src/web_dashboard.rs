@@ -1233,7 +1233,14 @@ fn consumer_shell_open(title: &str, active: &str) -> String {
 }
 
 fn consumer_shell_close() -> &'static str {
-    "</div></body></html>"
+    r#"</div>
+<footer style="text-align:center;padding:32px 16px 24px;font-size:.72rem;color:#484f58;
+               border-top:1px solid #21262d;margin-top:24px">
+  &copy; 2026 Red Robot K.K. &nbsp;&middot;&nbsp;
+  All rights reserved. &nbsp;&middot;&nbsp;
+  <a href="/app/onboarding" style="color:#484f58;text-decoration:none">Terms &amp; Risk Disclosure</a>
+</footer>
+</body></html>"#
 }
 
 /// Overview page — equity, P&L, deposit/withdraw, referral link.
