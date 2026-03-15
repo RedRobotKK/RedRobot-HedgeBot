@@ -415,6 +415,10 @@ async fn run_cycle(
             s.equity_window.pop_front();
         }
 
+        // Sparkline history — one point per cycle, capped at ~2.4 h (288 × 30 s)
+        s.equity_history.push(equity);
+        if s.equity_history.len() > 288 { s.equity_history.remove(0); }
+
         for pos in s.positions.iter_mut() { pos.cycles_held += 1; }
     }
 

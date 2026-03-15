@@ -164,7 +164,8 @@ pub struct BotState {
     pub last_update:      String,
     /// Unix-ms timestamp when the next 30 s cycle will fire.  0 = unknown.
     pub next_cycle_at:    i64,
-    /// Rolling equity snapshots (max 80) used to render the sparkline in the equity hero.
+    /// Rolling equity snapshots (max 288 ≈ 2.4 h at 30 s/cycle) for the sparkline.
+    /// Populated by the main trading loop every cycle — NOT by page loads.
     #[serde(default)]
     pub equity_history:   Vec<f64>,
     /// Platform Hyperliquid referral code — set from config at startup, not persisted.
@@ -197,15 +198,6 @@ pub type SharedState = Arc<RwLock<BotState>>;
 // ─────────────────────────────── Dashboard ───────────────────────────────────
 
 async fn dashboard_handler(State(app): State<AppState>) -> Html<String> {
-    // Briefly take write lock to snapshot equity into history, then drop it.
-    {
-        let mut w = app.bot_state.write().await;
-        let unrealised: f64 = w.positions.iter().map(|p| p.unrealised_pnl).sum();
-        let committed:  f64 = w.positions.iter().map(|p| p.size_usd).sum();
-        let eq = w.capital + committed + unrealised;
-        w.equity_history.push(eq);
-        if w.equity_history.len() > 80 { w.equity_history.remove(0); }
-    }
     let s = app.bot_state.read().await;
     let m = &s.metrics;
 
@@ -630,44 +622,77 @@ async fn dashboard_handler(State(app): State<AppState>) -> Html<String> {
     };
 
     // ── Equity sparkline SVG ──────────────────────────────────────────────
+    // Shows equity relative to initial_capital (baseline = break-even).
+    // Green fill + line when above initial capital; red when below.
     let sparkline_svg: String = {
-        let h = &s.equity_history;
-        if h.len() < 3 {
-            String::new()
+        let h       = &s.equity_history;
+        let initial = s.initial_capital;
+        if h.len() < 2 {
+            // Not enough data yet — show a flat placeholder line at baseline
+            format!(
+                r#"<svg width="240" height="56" viewBox="0 0 240 56"
+     style="display:block;flex-shrink:0;overflow:hidden;opacity:0.35">
+  <line x1="0" y1="28" x2="240" y2="28"
+        stroke="#484f58" stroke-width="1.5" stroke-dasharray="4 4"/>
+</svg>"#
+            )
         } else {
-            let min_v = h.iter().cloned().fold(f64::INFINITY,     f64::min);
-            let max_v = h.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            let range = (max_v - min_v).max(h.iter().cloned().fold(0.0_f64, f64::max) * 0.001).max(0.01);
-            let w_px  = 160.0_f64;
-            let h_px  = 40.0_f64;
-            let n     = h.len() as f64;
+            let w_px:   f64 = 240.0;
+            let h_px:   f64 = 56.0;
+            let pad:    f64 = 7.0;   // vertical padding so line never clips edges
+            let inner_h     = h_px - 2.0 * pad;
+
+            // Y-scale anchored to initial_capital so baseline is always visible
+            let data_min = h.iter().cloned().fold(f64::INFINITY,     f64::min).min(initial);
+            let data_max = h.iter().cloned().fold(f64::NEG_INFINITY, f64::max).max(initial);
+            // Symmetric 15 % buffer so the line never presses against the edges
+            let buf   = ((data_max - data_min).max(initial * 0.002)) * 0.15;
+            let min_v = data_min - buf;
+            let max_v = data_max + buf;
+            let range = (max_v - min_v).max(0.01);
+
+            // Map a $ value to an SVG y coordinate (top = high equity)
+            let to_y = |v: f64| -> f64 {
+                h_px - pad - (v - min_v) / range * inner_h
+            };
+
+            let n = h.len() as f64;
             let pts: String = h.iter().enumerate().map(|(i, &v)| {
                 let x = i as f64 / (n - 1.0) * w_px;
-                let y = h_px - (v - min_v) / range * (h_px - 2.0) - 1.0;
+                let y = to_y(v);
                 format!("{x:.1},{y:.1}")
             }).collect::<Vec<_>>().join(" ");
-            // Last endpoint for the fill polygon (close back to bottom-right then bottom-left)
-            let last_x = w_px;
-            let last_y = h.iter().last().map(|&v| h_px - (v - min_v) / range * (h_px - 2.0) - 1.0).unwrap_or(h_px);
-            let fill_pts = format!("{pts} {last_x:.1},{h_px:.1} 0,{h_px:.1}");
-            let trend_col = if h.last().unwrap_or(&0.0) >= h.first().unwrap_or(&0.0) { "#3fb950" } else { "#f85149" };
+
+            let base_y  = to_y(initial);
+            let last_y  = to_y(*h.last().unwrap_or(&initial));
+            let last_val = *h.last().unwrap_or(&initial);
+
+            // Green when above initial capital, red when below
+            let trend_c = if last_val >= initial { "#3fb950" } else { "#f85149" };
+
+            // Fill polygon: line path → close back along the baseline
+            // This highlights the profit (above baseline) or loss (below baseline) area
+            let fill_pts = format!("{pts} {w_px:.1},{base_y:.1} 0.0,{base_y:.1}");
+
             format!(
-                r#"<svg width="160" height="40" viewBox="0 0 160 40" style="display:block;flex-shrink:0;overflow:visible">
-  <defs>
-    <linearGradient id="spkg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="{c}" stop-opacity="0.25"/>
-      <stop offset="100%" stop-color="{c}" stop-opacity="0.01"/>
-    </linearGradient>
-  </defs>
-  <polygon points="{fp}" fill="url(#spkg)"/>
-  <polyline points="{pts}" fill="none" stroke="{c}" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
-  <circle cx="{last_x}" cy="{last_y:.1}" r="2.5" fill="{c}"/>
+                r#"<svg width="240" height="56" viewBox="0 0 240 56"
+     style="display:block;flex-shrink:0;overflow:hidden">
+  <!-- Baseline at initial capital (dashed break-even line) -->
+  <line x1="0" y1="{by:.1}" x2="240" y2="{by:.1}"
+        stroke="{c}" stroke-width="0.8" stroke-dasharray="3 3" stroke-opacity="0.45"/>
+  <!-- Profit / loss fill area -->
+  <polygon points="{fp}" fill="{c}" fill-opacity="0.13"/>
+  <!-- Equity line -->
+  <polyline points="{pts}" fill="none" stroke="{c}"
+            stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <!-- Current value dot -->
+  <circle cx="240" cy="{ly:.1}" r="3.5" fill="{c}"/>
 </svg>"#,
-                c       = trend_col,
-                fp      = fill_pts,
-                pts     = pts,
-                last_x  = last_x,
-                last_y  = last_y,
+                c   = trend_c,
+                by  = base_y,
+                fp  = fill_pts,
+                pts = pts,
+                ly  = last_y,
             )
         }
     };
@@ -731,7 +756,7 @@ body{{background:var(--bg);color:var(--text);
 .equity-hero .eq-label{{font-size:.68em;color:var(--muted);letter-spacing:.3px}}
 .equity-hero .pnl-badge{{padding:7px 14px;border-radius:22px;font-size:.9em;font-weight:700;
                           letter-spacing:.2px}}
-.eq-right{{display:flex;align-items:center;gap:16px}}
+.eq-right{{display:flex;align-items:center;gap:16px;flex:1;justify-content:flex-end;min-width:0}}
 /* ── Metric strip ── */
 .metrics{{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:12px}}
 @media(min-width:500px){{.metrics{{grid-template-columns:repeat(3,1fr)}}}}
