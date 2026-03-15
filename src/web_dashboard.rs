@@ -1804,7 +1804,8 @@ async fn login_handler(
   .card{{background:#161b22;border:1px solid #30363d;border-radius:16px;
          padding:40px 36px;max-width:400px;width:100%;text-align:center}}
   .logo{{font-weight:800;font-size:1.4rem;color:#e6edf3;letter-spacing:.04em;margin-bottom:8px}}
-  .logo span{{color:#3fb950}}
+  .logo .r{{color:#e6343a}}
+  .logo .b{{color:#3fb950}}
   .sub{{font-size:.88rem;color:#8b949e;margin-bottom:32px}}
   .btn{{display:block;width:100%;padding:13px;border-radius:8px;font-size:.95rem;
         font-weight:600;cursor:pointer;border:none;margin-bottom:12px;transition:.15s}}
@@ -1819,7 +1820,7 @@ async fn login_handler(
 </head>
 <body>
 <div class="card">
-  <div class="logo">Red<span>Robot</span></div>
+  <div class="logo"><span class="r">Red</span><span class="b">Robot</span></div>
   <div class="sub">Algorithmic trading · Sign in to your account</div>
 
   <button id="login-btn" class="btn btn-primary">Sign in with Privy</button>
@@ -1859,12 +1860,34 @@ async function exchangeToken(privyToken) {{
   return res.json();
 }}
 
-// Dynamically load Privy SDK from CDN
-import('https://esm.sh/@privy-io/js-sdk-core@latest')
-  .then(({{ PrivyClient }}) => {{
-    const privy = new PrivyClient(PRIVY_APP_ID, {{
-      storage: window.localStorage,
-    }});
+// Dynamically load Privy SDK from CDN.
+// Supports both the older class-based API (new PrivyClient(...))
+// and the newer factory-based API (createPrivyClient({{appId}})).
+import('https://esm.sh/@privy-io/js-sdk-core')
+  .then(async (mod) => {{
+    // Detect which API variant is available in this SDK version.
+    let privy;
+    if (typeof mod.PrivyClient === 'function') {{
+      // Older class-based API
+      try {{
+        privy = new mod.PrivyClient(PRIVY_APP_ID, {{ storage: window.localStorage }});
+      }} catch (_) {{
+        // Some builds export it as a factory rather than a class
+        privy = mod.PrivyClient(PRIVY_APP_ID, {{ storage: window.localStorage }});
+      }}
+    }} else if (typeof mod.createPrivyClient === 'function') {{
+      // Newer factory API
+      privy = mod.createPrivyClient({{ appId: PRIVY_APP_ID }});
+    }} else if (mod.default && typeof mod.default === 'function') {{
+      try {{
+        privy = new mod.default(PRIVY_APP_ID, {{ storage: window.localStorage }});
+      }} catch (_) {{
+        privy = mod.default({{ appId: PRIVY_APP_ID }});
+      }}
+    }} else {{
+      const available = Object.keys(mod).join(', ') || '(none)';
+      throw new Error('Unrecognised Privy SDK exports: ' + available);
+    }}
 
     // If already authenticated, skip the login step
     privy.getAccessToken().then(async (token) => {{
